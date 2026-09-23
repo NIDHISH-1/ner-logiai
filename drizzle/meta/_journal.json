@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1788874035919,
+      "tag": "0000_famous_sentinel",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1788874793863,
+      "tag": "0001_wide_silver_centurion",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1788876940979,
+      "tag": "0002_absurd_master_mold",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1789494557151,
+      "tag": "0003_nasty_young_avengers",
+      "breakpoints": true
+    }
+  ]
+}

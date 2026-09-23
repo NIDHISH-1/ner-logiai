@@ -1,0 +1,48 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
+@import "tailwindcss";
+@import "tw-animate-css";
+
+:root {
+  --background: 210 33% 97%;
+  --foreground: 213 33% 14%;
+  --card: 0 0% 100%;
+  --card-foreground: 213 33% 14%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 213 33% 14%;
+  --primary: 184 56% 24%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 170 31% 91%;
+  --secondary-foreground: 184 56% 18%;
+  --muted: 210 24% 94%;
+  --muted-foreground: 215 16% 47%;
+  --accent: 28 94% 63%;
+  --accent-foreground: 210 36% 12%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 214 24% 89%;
+  --input: 214 24% 89%;
+  --ring: 28 94% 63%;
+  --radius: 0.75rem;
+}
+
+* { border-color: hsl(var(--border)); }
+html { font-family: 'DM Sans', sans-serif; background: #f4f7f9; }
+body { margin: 0; min-width: 320px; background: #f4f7f9; }
+button { cursor: pointer; }
+button:active { transform: scale(0.98); }
+h1, h2, h3, h4, .font-display { font-family: 'Space Grotesk', sans-serif; }
+
+.leaflet-container { font-family: 'DM Sans', sans-serif; background: #dce8e7; }
+.leaflet-control-zoom { border: 0 !important; box-shadow: 0 5px 15px rgba(15,23,42,.12) !important; }
+.leaflet-control-zoom a { color: #12313b !important; border: 0 !important; }
+.leaflet-popup-content-wrapper, .leaflet-popup-tip { background: rgba(255,255,255,.96); }
+.leaflet-popup-content { margin: 12px 14px; font-size: 12px; line-height: 1.5; color: #334155; }
+.leaflet-popup-content strong { color: #0f172a; }
+.leaflet-popup-content span { color: #64748b; font-size: 10px; }
+.custom-pin { background: transparent; border: 0; }
+.map-pin { display: block; width: 18px; height: 18px; border: 3px solid white; border-radius: 999px 999px 999px 2px; background: var(--pin); transform: rotate(-45deg); box-shadow: 0 3px 8px rgba(15,23,42,.35); }
+.map-pin.incident { animation: pin-pulse 1.8s ease-out infinite; }
+.legend-dot { width: 8px; height: 8px; display: inline-block; margin-right: 6px; border-radius: 999px; }
+
+@keyframes pin-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,.35), 0 3px 8px rgba(15,23,42,.35); } 50% { box-shadow: 0 0 0 8px rgba(239,68,68,0), 0 3px 8px rgba(15,23,42,.35); } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
