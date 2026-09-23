@@ -1,0 +1,8 @@
+{
+  "name": "NER-LogiAI - Northeast Disaster & Route Intelligence",
+  "description": "AI-powered multimodal disaster response, risk prediction, emergency routing, and logistics management for Northeast India.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

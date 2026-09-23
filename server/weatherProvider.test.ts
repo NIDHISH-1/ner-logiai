@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearWeatherCache, fetchLiveWeather, getWeatherCacheTtlMs, LIVE_WEATHER_DATA_LABEL } from "./weatherProvider";
 import { WEATHER_DATA_LABEL } from "./riskEngine";
 
@@ -10,6 +10,10 @@ const fallback = {
   observedAt: new Date().toISOString(),
   dataLabel: WEATHER_DATA_LABEL,
 } as const;
+
+beforeEach(() => {
+  vi.stubEnv("OPENWEATHER_API_KEY", "test-api-key");
+});
 
 afterEach(() => {
   clearWeatherCache();
