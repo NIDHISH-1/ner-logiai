@@ -40,7 +40,20 @@ export function IncidentReportForm({ offline, onClose }: { offline: boolean; onC
   const [photo, setPhoto] = useState<File | null>(null);
   const [gpsError, setGpsError] = useState("");
   const [photoError, setPhotoError] = useState("");
-  const mutation = trpc.demo.createIncident.useMutation({ onSuccess: async () => { await trpcUtils.demo.snapshot.invalidate(); await trpcUtils.demo.incidents.invalidate(); toast("Incident submitted as UNVERIFIED"); onClose(); }, onError: error => toast.error(error.message) });
+  const mutation = trpc.demo.createIncident.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        trpcUtils.demo.snapshot.invalidate(),
+        trpcUtils.demo.incidents.invalidate(),
+        trpcUtils.operations.snapshot.invalidate(),
+        trpcUtils.operations.corridors.invalidate(),
+        trpcUtils.operations.route.invalidate(),
+      ]);
+      toast("Incident submitted as UNVERIFIED");
+      onClose();
+    },
+    onError: error => toast.error(error.message)
+  });
   const trpcUtils = trpc.useUtils();
 
   const captureGps = () => {

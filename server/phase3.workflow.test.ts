@@ -10,6 +10,9 @@ const mocks = vi.hoisted(() => ({
   listAuditEvents: vi.fn(),
   getDb: vi.fn(),
   seedDemoData: vi.fn(),
+  isDatabaseAvailable: vi.fn(() => false),
+  createAlert: vi.fn(),
+  resolveAlertsForIncident: vi.fn(),
 }));
 
 vi.mock("./db", () => mocks);
@@ -37,6 +40,7 @@ beforeEach(() => {
   mocks.listShipments.mockResolvedValue([]);
   mocks.listAuditEvents.mockResolvedValue([]);
   mocks.seedDemoData.mockResolvedValue({ seeded: true, vehicles: 10, shipments: 15, incidents: 20 });
+  mocks.isDatabaseAvailable.mockReturnValue(false);
 });
 
 describe("Phase 3 incident workflow", () => {

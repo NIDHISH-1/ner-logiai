@@ -39,7 +39,7 @@ export async function storagePut(
   if (!forgeConfig) {
     const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data as any);
     inMemoryStorage.set(key, { buffer, contentType });
-    return { key, url: `/manus-storage/${key}` };
+    return { key, url: `/storage/${key}` };
   }
 
   const { forgeUrl, forgeKey } = forgeConfig;

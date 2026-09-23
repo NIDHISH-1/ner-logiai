@@ -24,14 +24,33 @@ export function OfflineSyncStatus({ onSynced }: { onSynced?: () => void }) {
   const syncing = useRef(false);
   const syncIncident = trpc.demo.syncIncident.useMutation();
   const utils = trpc.useUtils();
+  const syncIncidentRef = useRef(syncIncident.mutateAsync);
+  syncIncidentRef.current = syncIncident.mutateAsync;
+  const utilsRef = useRef(utils);
+  utilsRef.current = utils;
+  const onSyncedRef = useRef(onSynced);
+  onSyncedRef.current = onSynced;
 
-  const refresh = useCallback(() => setItems(readOfflineQueue()), []);
+  const refresh = useCallback(() => {
+    const queue = readOfflineQueue();
+    setItems((prev) => {
+      if (prev.length === queue.length && JSON.stringify(prev) === JSON.stringify(queue)) {
+        return prev;
+      }
+      return queue;
+    });
+  }, []);
 
   const sync = useCallback(async () => {
-    if (!navigator.onLine || syncing.current) return;
+    if (typeof navigator !== "undefined" && !navigator.onLine) return;
+    if (syncing.current) return;
     const queued = readOfflineQueue();
     const candidates = queued.filter(item => item.status === "PENDING" || item.status === "FAILED");
-    if (!candidates.length) { setState("IDLE"); refresh(); return; }
+    if (!candidates.length) {
+      setState((prev) => (prev !== "IDLE" ? "IDLE" : prev));
+      refresh();
+      return;
+    }
     syncing.current = true;
     setState("SYNCING");
     let hadFailure = false;
@@ -41,7 +60,7 @@ export function OfflineSyncStatus({ onSynced }: { onSynced?: () => void }) {
       writeOfflineQueue(current);
       try {
         const photoUrl = await uploadQueuedPhoto(item);
-        const result = await syncIncident.mutateAsync({ id: item.id, type: item.type, severity: item.severity, description: item.description, latitude: item.latitude, longitude: item.longitude, roadAccessibility: item.roadAccessibility, occurredAt: new Date(item.occurredAt), photoUrl });
+        const result = await syncIncidentRef.current({ id: item.id, type: item.type, severity: item.severity, description: item.description, latitude: item.latitude, longitude: item.longitude, roadAccessibility: item.roadAccessibility, occurredAt: new Date(item.occurredAt), photoUrl });
         current = readOfflineQueue();
         if (result.status === "CONFLICT") {
           hadFailure = true;
@@ -60,23 +79,36 @@ export function OfflineSyncStatus({ onSynced }: { onSynced?: () => void }) {
         writeOfflineQueue(current);
       }
     }
-    await Promise.all([utils.demo.snapshot.invalidate(), utils.demo.incidents.invalidate()]);
-    onSynced?.();
+    await Promise.all([
+      utilsRef.current.demo.snapshot.invalidate(),
+      utilsRef.current.demo.incidents.invalidate(),
+      utilsRef.current.operations.snapshot.invalidate(),
+      utilsRef.current.operations.corridors.invalidate(),
+      utilsRef.current.operations.route.invalidate(),
+    ]);
+    onSyncedRef.current?.();
     syncing.current = false;
     setState(hadFailure ? "ERROR" : "IDLE");
     if (!hadFailure) toast.success("Offline reports synchronized.");
-  }, [onSynced, refresh, syncIncident, utils.demo.incidents, utils.demo.snapshot]);
+  }, [refresh]);
+
+  const syncRef = useRef(sync);
+  syncRef.current = sync;
 
   useEffect(() => {
-    const goOnline = () => { setOnline(true); void sync(); };
+    const goOnline = () => { setOnline(true); void syncRef.current(); };
     const goOffline = () => { setOnline(false); setState("OFFLINE"); };
     window.addEventListener("online", goOnline);
     window.addEventListener("offline", goOffline);
     window.addEventListener(OFFLINE_QUEUE_EVENT, refresh);
     refresh();
-    if (navigator.onLine) void sync();
-    return () => { window.removeEventListener("online", goOnline); window.removeEventListener("offline", goOffline); window.removeEventListener(OFFLINE_QUEUE_EVENT, refresh); };
-  }, [refresh, sync]);
+    if (typeof navigator !== "undefined" && navigator.onLine) void syncRef.current();
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+      window.removeEventListener(OFFLINE_QUEUE_EVENT, refresh);
+    };
+  }, [refresh]);
 
   const pending = pendingOfflineCount(items);
   const conflicts = items.filter(item => item.status === "CONFLICT").length;

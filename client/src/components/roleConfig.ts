@@ -21,6 +21,14 @@ export const roleKeyByLabel: Record<Role, string> = {
   "Emergency Response Team": "emergency_team",
 };
 
+export const roleLabelByKey: Record<string, Role> = {
+  admin: "Government / District Administrator",
+  field_officer: "Field Officer",
+  truck_driver: "Truck Driver",
+  logistics_manager: "Logistics Manager",
+  emergency_team: "Emergency Response Team",
+};
+
 export const roleNavigation: Record<Role, string[]> = {
   "Government / District Administrator": ["Dashboard", "Live Map", "Risk Intelligence", "Routes", "Vehicles", "Shipments", "Incidents", "Alerts", "Analytics", "Audit Logs"],
   "Truck Driver": ["My Trip", "Navigation", "My Shipment", "Alerts", "Report Incident", "Offline Data"],

@@ -20,6 +20,11 @@ export const vehicles = mysqlTable("vehicles", {
   risk: mysqlEnum("risk", ["LOW", "MODERATE", "HIGH", "CRITICAL"]).default("LOW").notNull(),
   latitude: decimal("latitude", { precision: 9, scale: 6 }).notNull(),
   longitude: decimal("longitude", { precision: 9, scale: 6 }).notNull(),
+  speed: decimal("speed", { precision: 6, scale: 2 }).default("0.00").notNull(),
+  heading: int("heading").default(0).notNull(),
+  currentCorridor: varchar("currentCorridor", { length: 120 }),
+  gpsSource: varchar("gpsSource", { length: 40 }).default("SIMULATED GPS").notNull(),
+  activeRoute: text("activeRoute"),
   etaMinutes: int("etaMinutes").default(0).notNull(),
   isDemo: boolean("isDemo").default(false).notNull(),
   lastUpdated: timestamp("lastUpdated").defaultNow().notNull(),
@@ -32,10 +37,27 @@ export const shipments = mysqlTable("shipments", {
   origin: varchar("origin", { length: 120 }).notNull(),
   destination: varchar("destination", { length: 120 }).notNull(),
   status: mysqlEnum("status", ["planned", "in_transit", "delayed", "delivered"]).default("planned").notNull(),
+  plannedEtaMinutes: int("plannedEtaMinutes").default(0).notNull(),
   etaMinutes: int("etaMinutes").default(0).notNull(),
+  delayMinutes: int("delayMinutes").default(0).notNull(),
+  delayReason: text("delayReason"),
+  assignedVehicleId: varchar("assignedVehicleId", { length: 32 }),
+  activeRoute: text("activeRoute"),
   isDemo: boolean("isDemo").default(false).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const vehicleLocationHistory = mysqlTable("vehicleLocationHistory", {
+  id: int("id").autoincrement().primaryKey(),
+  vehicleId: varchar("vehicleId", { length: 32 }).notNull(),
+  latitude: decimal("latitude", { precision: 9, scale: 6 }).notNull(),
+  longitude: decimal("longitude", { precision: 9, scale: 6 }).notNull(),
+  speed: decimal("speed", { precision: 6, scale: 2 }).default("0.00").notNull(),
+  heading: int("heading").default(0).notNull(),
+  currentCorridor: varchar("currentCorridor", { length: 120 }),
+  gpsSource: varchar("gpsSource", { length: 40 }).default("SIMULATED GPS").notNull(),
+  timestamp: timestamp("timestamp").defaultNow().notNull(),
 });
 
 export const incidents = mysqlTable("incidents", {
@@ -83,6 +105,31 @@ export const weatherSnapshots = mysqlTable("weatherSnapshots", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const alerts = mysqlTable("alerts", {
+  id: varchar("id", { length: 32 }).primaryKey(),
+  incidentId: varchar("incidentId", { length: 32 }),
+  alertType: varchar("alertType", { length: 64 }).notNull(),
+  severity: mysqlEnum("severity", ["INFO", "ADVISORY", "HIGH", "CRITICAL"]).default("HIGH").notNull(),
+  title: varchar("title", { length: 160 }).notNull(),
+  message: text("message").notNull(),
+  corridor: varchar("corridor", { length: 120 }).notNull(),
+  roadSegment: varchar("roadSegment", { length: 120 }),
+  affectedVehicleIds: text("affectedVehicleIds"),
+  affectedShipmentIds: text("affectedShipmentIds"),
+  targetRoles: text("targetRoles"),
+  status: mysqlEnum("status", ["ACTIVE", "ACKNOWLEDGED", "RESOLVED"]).default("ACTIVE").notNull(),
+  acknowledgedBy: int("acknowledgedBy"),
+  acknowledgedByName: varchar("acknowledgedByName", { length: 120 }),
+  acknowledgedAt: timestamp("acknowledgedAt"),
+  resolvedBy: int("resolvedBy"),
+  resolvedAt: timestamp("resolvedAt"),
+  actorId: int("actorId"),
+  actorRole: varchar("actorRole", { length: 40 }),
+  isDemo: boolean("isDemo").default(false).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type Vehicle = typeof vehicles.$inferSelect;
@@ -95,3 +142,7 @@ export type AuditEvent = typeof auditEvents.$inferSelect;
 export type InsertAuditEvent = typeof auditEvents.$inferInsert;
 export type WeatherSnapshot = typeof weatherSnapshots.$inferSelect;
 export type InsertWeatherSnapshot = typeof weatherSnapshots.$inferInsert;
+export type VehicleLocationHistory = typeof vehicleLocationHistory.$inferSelect;
+export type InsertVehicleLocationHistory = typeof vehicleLocationHistory.$inferInsert;
+export type Alert = typeof alerts.$inferSelect;
+export type InsertAlert = typeof alerts.$inferInsert;

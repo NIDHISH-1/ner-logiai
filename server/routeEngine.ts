@@ -54,7 +54,7 @@ const baselinePrediction: RiskPrediction = { model: "synthetic-random-forest-v1"
 
 function edgeSafety(edge: RouteEdge, predictions: Map<string, RiskPrediction>, useStoredSafety: boolean): Candidate {
   const risk = edge.riskId ? predictions.get(edge.riskId) : baselinePrediction;
-  const safety = edge.riskId && useStoredSafety
+  const safety = (edge.riskId && useStoredSafety && edge.roadAccessibility === "accessible")
     ? safetyById.get(edge.riskId) ?? validateRouteSafety({ roadAccessibility: edge.roadAccessibility, incidents: edge.incidents, prediction: risk })
     : validateRouteSafety({ roadAccessibility: edge.roadAccessibility, incidents: edge.incidents, prediction: risk });
   return { edge, risk, safety };
@@ -73,7 +73,67 @@ function edgeCost(candidate: Candidate) {
   return candidate.edge.distanceKm + riskPenalty + delayPenalty + cautionPenalty;
 }
 
-function shortestByDistance(origin: RouteNodeId, destination: RouteNodeId) {
+export function buildRoadGraphWithIncidents(
+  activeIncidents?: Array<{
+    id?: string;
+    type?: string;
+    severity?: string;
+    status?: string;
+    description?: string;
+    roadAccessibility?: string | null;
+    latitude?: string | number | null;
+    longitude?: string | number | null;
+    isDemo?: boolean;
+  }>
+): RouteEdge[] {
+  if (!activeIncidents || activeIncidents.length === 0) {
+    return simulatedRoadGraph;
+  }
+
+  const newOrUpdatedIncidents = activeIncidents.filter((inc) => {
+    if (inc.id === "INC-2407" && inc.roadAccessibility !== "blocked") return false;
+    return true;
+  });
+
+  return simulatedRoadGraph.map((edge) => {
+    const relevant = newOrUpdatedIncidents.filter((inc) => {
+      const desc = (inc.description || "").toUpperCase();
+      const type = (inc.type || "").toUpperCase();
+      if (edge.riskId === "NH-37-JORHAT" && (desc.includes("NH-37") || desc.includes("JORHAT") || type.includes("JORHAT"))) return true;
+      if (edge.riskId === "NH-2-KOHIMA" && (desc.includes("NH-2") || desc.includes("KOHIMA") || desc.includes("DIMAPUR") || type.includes("KOHIMA"))) return true;
+      if (edge.riskId === "NH-6-SHILLONG" && (desc.includes("NH-6") || desc.includes("SHILLONG") || type.includes("SHILLONG"))) return true;
+      if (edge.from === "GUWAHATI" && edge.to === "REMOTE_BLOCKED" && (desc.includes("REMOTE") || desc.includes("DISTRICT SPUR"))) return true;
+      return false;
+    });
+
+    if (relevant.length === 0) return edge;
+
+    const hasVerifiedBlocking = relevant.some(
+      (r) => r.status === "VERIFIED" && (r.roadAccessibility === "blocked" || r.severity === "CRITICAL")
+    );
+    const hasExplicitBlocked = relevant.some((r) => r.roadAccessibility === "blocked");
+
+    const mergedIncidents = [
+      ...(edge.incidents ?? []),
+      ...relevant.map((r) => ({
+        type: r.type ?? "Incident",
+        severity: r.severity ?? "MODERATE",
+        status: r.status ?? "UNVERIFIED",
+        roadAccessibility: r.roadAccessibility ?? undefined,
+      })),
+    ];
+
+    return {
+      ...edge,
+      roadAccessibility: (hasVerifiedBlocking || hasExplicitBlocked)
+        ? ("blocked" as const)
+        : edge.roadAccessibility,
+      incidents: mergedIncidents,
+    };
+  });
+}
+
+function shortestByDistance(origin: RouteNodeId, destination: RouteNodeId, roadGraph: RouteEdge[] = simulatedRoadGraph) {
   const queue: { node: RouteNodeId; distance: number; path: RouteNodeId[]; edges: RouteEdge[] }[] = [{ node: origin, distance: 0, path: [origin], edges: [] }];
   const visited = new Set<RouteNodeId>();
   while (queue.length) {
@@ -82,7 +142,7 @@ function shortestByDistance(origin: RouteNodeId, destination: RouteNodeId) {
     if (current.node === destination) return current;
     if (visited.has(current.node)) continue;
     visited.add(current.node);
-    for (const edge of simulatedRoadGraph.filter(item => item.from === current.node)) queue.push({ node: edge.to, distance: current.distance + edge.distanceKm, path: [...current.path, edge.to], edges: [...current.edges, edge] });
+    for (const edge of roadGraph.filter(item => item.from === current.node)) queue.push({ node: edge.to, distance: current.distance + edge.distanceKm, path: [...current.path, edge.to], edges: [...current.edges, edge] });
   }
   return null;
 }
@@ -106,10 +166,15 @@ function weatherDetails(candidates: Candidate[]) {
   return { weatherSource: sources.join(" / ") || "SIMULATED WEATHER DATA", weatherFreshness: freshness, weatherObservedAt: observed };
 }
 
-export function optimizeRoute(origin: RouteNodeId, destination: RouteNodeId, liveRiskInputs?: readonly RouteRiskInput[]): RouteRecommendation {
+export function optimizeRoute(
+  origin: RouteNodeId,
+  destination: RouteNodeId,
+  liveRiskInputs?: readonly RouteRiskInput[],
+  roadGraph: RouteEdge[] = simulatedRoadGraph
+): RouteRecommendation {
   const useStoredSafety = !liveRiskInputs;
   const predictions = liveRiskInputs ? new Map(liveRiskInputs.map(item => [item.id, item.prediction])) : predictionById;
-  const shortest = shortestByDistance(origin, destination);
+  const shortest = shortestByDistance(origin, destination, roadGraph);
   const shortestRouteRejected = Boolean(shortest?.edges.some(edge => edgeSafety(edge, predictions, useStoredSafety).safety.status === "REJECTED"));
   const shortestRoute = shortest ? summarizeCandidates(shortest.path, shortest.edges.map(edge => edgeSafety(edge, predictions, useStoredSafety))) : null;
   const queue: QueueItem[] = [{ node: origin, cost: 0, path: [origin], candidates: [] }];
@@ -121,14 +186,19 @@ export function optimizeRoute(origin: RouteNodeId, destination: RouteNodeId, liv
     if (current.node === destination) { solution = current; break; }
     if ((bestCost.get(current.node) ?? Infinity) <= current.cost) continue;
     bestCost.set(current.node, current.cost);
-    for (const edge of simulatedRoadGraph.filter(item => item.from === current.node)) {
+    for (const edge of roadGraph.filter(item => item.from === current.node)) {
       const candidate = edgeSafety(edge, predictions, useStoredSafety);
       if (candidate.safety.status === "REJECTED") continue;
       if (current.path.includes(edge.to)) continue;
       queue.push({ node: edge.to, cost: current.cost + edgeCost(candidate), path: [...current.path, edge.to], candidates: [...current.candidates, candidate] });
     }
   }
-  const rejectedAlternatives = (shortest?.edges ?? []).filter(edge => edgeSafety(edge, predictions, useStoredSafety).safety.status === "REJECTED").map(edge => ({ label: edge.label, reason: edgeSafety(edge, predictions, useStoredSafety).safety.reasons.join("; ") }));
+  const rejectedEdges = (shortest?.edges ?? []).filter(edge => edgeSafety(edge, predictions, useStoredSafety).safety.status === "REJECTED");
+  const otherRejected = roadGraph.filter(edge => !shortest?.edges.includes(edge) && edgeSafety(edge, predictions, useStoredSafety).safety.status === "REJECTED");
+  const rejectedAlternatives = [...rejectedEdges, ...otherRejected].map(edge => ({
+    label: edge.label,
+    reason: edgeSafety(edge, predictions, useStoredSafety).safety.reasons.join("; "),
+  }));
   if (!solution) return { origin, destination, status: "NO SAFE ROUTE AVAILABLE", route: [], routeLabel: "NO SAFE ROUTE AVAILABLE", distanceKm: null, etaMinutes: null, riskProbability: null, confidence: null, safetyStatus: "UNAVAILABLE", ...weatherDetails(shortest?.edges.map(edge => edgeSafety(edge, predictions, useStoredSafety)) ?? []), reason: "Every known route is rejected by the safety validator or no graph connection exists.", shortestRouteRejected, shortestRouteLabel: shortest ? formatRoute(shortest.path) : null, shortestRoute, costBreakdown: { distanceCost: shortest?.distance ?? 0, riskPenalty: shortest ? shortest.edges.map(edge => edgeSafety(edge, predictions, useStoredSafety)).reduce((sum, item) => sum + (item.risk?.probability ?? 0) * 4, 0) : 0, delayPenalty: shortest ? shortest.edges.reduce((sum, item) => sum + item.etaMinutes * 0.12, 0) : 0, safetyPenalty: shortest ? shortest.edges.map(edge => edgeSafety(edge, predictions, useStoredSafety)).filter(item => item.safety.status === "CAUTION").length * 115 : 0 }, rejectedAlternatives, advisory: "AI prediction — requires route safety validation." };
   const distanceKm = solution.candidates.reduce((sum, item) => sum + item.edge.distanceKm, 0);
   const etaMinutes = solution.candidates.reduce((sum, item) => sum + item.edge.etaMinutes, 0);

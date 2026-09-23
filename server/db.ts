@@ -2,23 +2,29 @@ import { desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { nanoid } from "nanoid";
 import {
+  Alert,
   AuditEvent,
   Incident,
+  InsertAlert,
   InsertAuditEvent,
   InsertIncident,
   InsertShipment,
   InsertUser,
   InsertVehicle,
   InsertWeatherSnapshot,
+  InsertVehicleLocationHistory,
   Shipment,
   User,
   Vehicle,
+  VehicleLocationHistory,
   WeatherSnapshot,
+  alerts,
   auditEvents,
   incidents,
   shipments,
   users,
   vehicles,
+  vehicleLocationHistory,
   weatherSnapshots,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
@@ -48,9 +54,15 @@ const memoryVehicles = new Map<string, Vehicle>();
 const memoryIncidents = new Map<string, Incident>();
 const memoryAuditEvents: AuditEvent[] = [];
 const memoryWeatherSnapshots: WeatherSnapshot[] = [];
+const memoryVehicleLocationHistory: VehicleLocationHistory[] = [];
 let nextAuditId = 1;
 let nextWeatherSnapshotId = 1;
 let nextUserId = 1;
+let nextLocationHistoryId = 1;
+
+export function isDatabaseAvailable(): boolean {
+  return Boolean(process.env.DATABASE_URL && _db !== null);
+}
 
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) throw new Error("User openId is required for upsert");
@@ -140,34 +152,34 @@ export async function getUserByOpenId(openId: string): Promise<User | undefined>
 }
 
 export const demoShipments: InsertShipment[] = [
-  { id: "SHP-001", name: "Emergency Medicine", priority: "CRITICAL", origin: "Guwahati", destination: "Imphal", status: "in_transit", etaMinutes: 222, isDemo: true },
-  { id: "SHP-002", name: "Flood Relief Kits", priority: "HIGH", origin: "Dimapur", destination: "Kohima", status: "in_transit", etaMinutes: 78, isDemo: true },
-  { id: "SHP-003", name: "Cold Chain Vaccines", priority: "CRITICAL", origin: "Agartala", destination: "Aizawl", status: "in_transit", etaMinutes: 306, isDemo: true },
-  { id: "SHP-004", name: "Rice & Staples", priority: "HIGH", origin: "Siliguri", destination: "Itanagar", status: "delayed", etaMinutes: 420, isDemo: true },
-  { id: "SHP-005", name: "Water Purification Units", priority: "HIGH", origin: "Shillong", destination: "Jowai", status: "in_transit", etaMinutes: 95, isDemo: true },
-  { id: "SHP-006", name: "Emergency Tents", priority: "NORMAL", origin: "Guwahati", destination: "Aizawl", status: "planned", etaMinutes: 560, isDemo: true },
-  { id: "SHP-007", name: "Infant Nutrition", priority: "CRITICAL", origin: "Imphal", destination: "Ukhrul", status: "in_transit", etaMinutes: 138, isDemo: true },
-  { id: "SHP-008", name: "Generator Fuel", priority: "HIGH", origin: "Dibrugarh", destination: "Pasighat", status: "delayed", etaMinutes: 360, isDemo: true },
-  { id: "SHP-009", name: "Blankets", priority: "NORMAL", origin: "Kohima", destination: "Mokokchung", status: "delivered", etaMinutes: 0, isDemo: true },
-  { id: "SHP-010", name: "Trauma Supplies", priority: "CRITICAL", origin: "Guwahati", destination: "Tura", status: "in_transit", etaMinutes: 185, isDemo: true },
-  { id: "SHP-011", name: "Community Food Packs", priority: "NORMAL", origin: "Agartala", destination: "Dharmanagar", status: "in_transit", etaMinutes: 210, isDemo: true },
-  { id: "SHP-012", name: "Mobile Water Tanks", priority: "HIGH", origin: "Shillong", destination: "Nongpoh", status: "planned", etaMinutes: 170, isDemo: true },
-  { id: "SHP-013", name: "First Aid Kits", priority: "HIGH", origin: "Aizawl", destination: "Lunglei", status: "in_transit", etaMinutes: 260, isDemo: true },
-  { id: "SHP-014", name: "Solar Lanterns", priority: "LOW", origin: "Itanagar", destination: "Ziro", status: "planned", etaMinutes: 190, isDemo: true },
-  { id: "SHP-015", name: "Shelter Tarps", priority: "NORMAL", origin: "Kohima", destination: "Phek", status: "delayed", etaMinutes: 285, isDemo: true },
+  { id: "SHP-001", name: "Emergency Medicine", priority: "CRITICAL", origin: "Guwahati", destination: "Imphal", status: "in_transit", plannedEtaMinutes: 222, etaMinutes: 222, delayMinutes: 0, delayReason: "On schedule · standard mountain transit", assignedVehicleId: "TRK-104", activeRoute: "GUWAHATI -> KOHIMA -> IMPHAL", isDemo: true },
+  { id: "SHP-002", name: "Flood Relief Kits", priority: "HIGH", origin: "Dimapur", destination: "Kohima", status: "in_transit", plannedEtaMinutes: 78, etaMinutes: 78, delayMinutes: 0, delayReason: "On schedule · standard mountain transit", assignedVehicleId: "TRK-219", activeRoute: "DIMAPUR -> KOHIMA", isDemo: true },
+  { id: "SHP-003", name: "Cold Chain Vaccines", priority: "CRITICAL", origin: "Agartala", destination: "Aizawl", status: "in_transit", plannedEtaMinutes: 306, etaMinutes: 306, delayMinutes: 0, delayReason: "On schedule · standard mountain transit", assignedVehicleId: "TRK-088", activeRoute: "AGARTALA -> AIZAWL", isDemo: true },
+  { id: "SHP-004", name: "Rice & Staples", priority: "HIGH", origin: "Siliguri", destination: "Itanagar", status: "delayed", plannedEtaMinutes: 360, etaMinutes: 420, delayMinutes: 60, delayReason: "Delay due to weather risk and mountain sector caution", assignedVehicleId: "TRK-301", activeRoute: "SILIGURI -> ITANAGAR", isDemo: true },
+  { id: "SHP-005", name: "Water Purification Units", priority: "HIGH", origin: "Shillong", destination: "Jowai", status: "in_transit", plannedEtaMinutes: 95, etaMinutes: 95, delayMinutes: 0, delayReason: "On schedule · standard mountain transit", assignedVehicleId: "TRK-117", activeRoute: "SHILLONG -> JOWAI", isDemo: true },
+  { id: "SHP-006", name: "Emergency Tents", priority: "NORMAL", origin: "Guwahati", destination: "Aizawl", status: "planned", plannedEtaMinutes: 560, etaMinutes: 560, delayMinutes: 0, delayReason: "On schedule · standard mountain transit", assignedVehicleId: "TRK-452", activeRoute: "GUWAHATI -> AIZAWL", isDemo: true },
+  { id: "SHP-007", name: "Infant Nutrition", priority: "CRITICAL", origin: "Imphal", destination: "Ukhrul", status: "in_transit", plannedEtaMinutes: 138, etaMinutes: 138, delayMinutes: 0, delayReason: "On schedule · standard mountain transit", assignedVehicleId: "TRK-063", activeRoute: "IMPHAL -> UKHRUL", isDemo: true },
+  { id: "SHP-008", name: "Generator Fuel", priority: "HIGH", origin: "Dibrugarh", destination: "Pasighat", status: "delayed", plannedEtaMinutes: 310, etaMinutes: 360, delayMinutes: 50, delayReason: "Delay due to single-lane road restriction", assignedVehicleId: "TRK-288", activeRoute: "DIBRUGARH -> PASIGHAT", isDemo: true },
+  { id: "SHP-009", name: "Blankets", priority: "NORMAL", origin: "Kohima", destination: "Mokokchung", status: "delivered", plannedEtaMinutes: 180, etaMinutes: 0, delayMinutes: 0, delayReason: "Delivered successfully", assignedVehicleId: null, activeRoute: "KOHIMA -> MOKOKCHUNG", isDemo: true },
+  { id: "SHP-010", name: "Trauma Supplies", priority: "CRITICAL", origin: "Guwahati", destination: "Tura", status: "in_transit", plannedEtaMinutes: 185, etaMinutes: 185, delayMinutes: 0, delayReason: "On schedule · standard mountain transit", assignedVehicleId: "TRK-190", activeRoute: "GUWAHATI -> TURA", isDemo: true },
+  { id: "SHP-011", name: "Community Food Packs", priority: "NORMAL", origin: "Agartala", destination: "Dharmanagar", status: "in_transit", plannedEtaMinutes: 210, etaMinutes: 210, delayMinutes: 0, delayReason: "On schedule · standard mountain transit", assignedVehicleId: null, activeRoute: "AGARTALA -> DHARMANAGAR", isDemo: true },
+  { id: "SHP-012", name: "Mobile Water Tanks", priority: "HIGH", origin: "Shillong", destination: "Nongpoh", status: "planned", plannedEtaMinutes: 170, etaMinutes: 170, delayMinutes: 0, delayReason: "On schedule · standard mountain transit", assignedVehicleId: null, activeRoute: "SHILLONG -> NONGPOH", isDemo: true },
+  { id: "SHP-013", name: "First Aid Kits", priority: "HIGH", origin: "Aizawl", destination: "Lunglei", status: "in_transit", plannedEtaMinutes: 260, etaMinutes: 260, delayMinutes: 0, delayReason: "On schedule · standard mountain transit", assignedVehicleId: "TRK-521", activeRoute: "AIZAWL -> LUNGLEI", isDemo: true },
+  { id: "SHP-014", name: "Solar Lanterns", priority: "LOW", origin: "Itanagar", destination: "Ziro", status: "planned", plannedEtaMinutes: 190, etaMinutes: 190, delayMinutes: 0, delayReason: "On schedule · standard mountain transit", assignedVehicleId: null, activeRoute: "ITANAGAR -> ZIRO", isDemo: true },
+  { id: "SHP-015", name: "Shelter Tarps", priority: "NORMAL", origin: "Kohima", destination: "Phek", status: "delayed", plannedEtaMinutes: 240, etaMinutes: 285, delayMinutes: 45, delayReason: "Delay due to weather risk and mountain sector caution", assignedVehicleId: null, activeRoute: "KOHIMA -> PHEK", isDemo: true },
 ];
 
 export const demoVehicles: InsertVehicle[] = [
-  { id: "TRK-104", shipmentId: "SHP-001", status: "at_risk", risk: "HIGH", latitude: "26.144500", longitude: "91.736200", etaMinutes: 222, isDemo: true },
-  { id: "TRK-219", shipmentId: "SHP-002", status: "on_route", risk: "MODERATE", latitude: "25.674700", longitude: "94.108600", etaMinutes: 78, isDemo: true },
-  { id: "TRK-088", shipmentId: "SHP-003", status: "on_route", risk: "LOW", latitude: "23.831500", longitude: "91.286800", etaMinutes: 306, isDemo: true },
-  { id: "TRK-301", shipmentId: "SHP-004", status: "delayed", risk: "HIGH", latitude: "26.727100", longitude: "88.395300", etaMinutes: 420, isDemo: true },
-  { id: "TRK-117", shipmentId: "SHP-005", status: "on_route", risk: "LOW", latitude: "25.467000", longitude: "91.366200", etaMinutes: 95, isDemo: true },
-  { id: "TRK-452", shipmentId: "SHP-006", status: "idle", risk: "LOW", latitude: "26.144500", longitude: "91.736200", etaMinutes: 560, isDemo: true },
-  { id: "TRK-063", shipmentId: "SHP-007", status: "on_route", risk: "MODERATE", latitude: "24.807400", longitude: "94.047900", etaMinutes: 138, isDemo: true },
-  { id: "TRK-288", shipmentId: "SHP-008", status: "delayed", risk: "HIGH", latitude: "27.472800", longitude: "94.912000", etaMinutes: 360, isDemo: true },
-  { id: "TRK-190", shipmentId: "SHP-010", status: "on_route", risk: "LOW", latitude: "25.514500", longitude: "90.203700", etaMinutes: 185, isDemo: true },
-  { id: "TRK-521", shipmentId: "SHP-013", status: "on_route", risk: "MODERATE", latitude: "23.727100", longitude: "92.717600", etaMinutes: 260, isDemo: true },
+  { id: "TRK-104", shipmentId: "SHP-001", status: "at_risk", risk: "HIGH", latitude: "26.144500", longitude: "91.736200", speed: "42.50", heading: 75, currentCorridor: "NH-2 · Dimapur to Kohima / Imphal Corridor", gpsSource: "SIMULATED GPS", activeRoute: "GUWAHATI -> KOHIMA -> IMPHAL", etaMinutes: 222, isDemo: true },
+  { id: "TRK-219", shipmentId: "SHP-002", status: "on_route", risk: "MODERATE", latitude: "25.674700", longitude: "94.108600", speed: "38.00", heading: 140, currentCorridor: "NH-2 · Dimapur to Kohima / Imphal Corridor", gpsSource: "SIMULATED GPS", activeRoute: "DIMAPUR -> KOHIMA", etaMinutes: 78, isDemo: true },
+  { id: "TRK-088", shipmentId: "SHP-003", status: "on_route", risk: "LOW", latitude: "23.831500", longitude: "91.286800", speed: "45.00", heading: 60, currentCorridor: "NH-44 · Agartala Transit", gpsSource: "SIMULATED GPS", activeRoute: "AGARTALA -> AIZAWL", etaMinutes: 306, isDemo: true },
+  { id: "TRK-301", shipmentId: "SHP-004", status: "delayed", risk: "HIGH", latitude: "26.727100", longitude: "88.395300", speed: "28.50", heading: 45, currentCorridor: "NH-27 · Western Corridor", gpsSource: "SIMULATED GPS", activeRoute: "SILIGURI -> ITANAGAR", etaMinutes: 420, isDemo: true },
+  { id: "TRK-117", shipmentId: "SHP-005", status: "on_route", risk: "LOW", latitude: "25.467000", longitude: "91.366200", speed: "40.00", heading: 110, currentCorridor: "NH-6 · Guwahati - Shillong - Silchar Expressway", gpsSource: "SIMULATED GPS", activeRoute: "SHILLONG -> JOWAI", etaMinutes: 95, isDemo: true },
+  { id: "TRK-452", shipmentId: "SHP-006", status: "idle", risk: "LOW", latitude: "26.144500", longitude: "91.736200", speed: "0.00", heading: 0, currentCorridor: "Guwahati Depot", gpsSource: "SIMULATED GPS", activeRoute: "GUWAHATI -> AIZAWL", etaMinutes: 560, isDemo: true },
+  { id: "TRK-063", shipmentId: "SHP-007", status: "on_route", risk: "MODERATE", latitude: "24.807400", longitude: "94.047900", speed: "35.00", heading: 25, currentCorridor: "NH-39 · Southern Link", gpsSource: "SIMULATED GPS", activeRoute: "IMPHAL -> UKHRUL", etaMinutes: 138, isDemo: true },
+  { id: "TRK-288", shipmentId: "SHP-008", status: "delayed", risk: "HIGH", latitude: "27.472800", longitude: "94.912000", speed: "22.00", heading: 15, currentCorridor: "NH-37 · Upper Assam", gpsSource: "SIMULATED GPS", activeRoute: "DIBRUGARH -> PASIGHAT", etaMinutes: 360, isDemo: true },
+  { id: "TRK-190", shipmentId: "SHP-010", status: "on_route", risk: "LOW", latitude: "25.514500", longitude: "90.203700", speed: "46.00", heading: 260, currentCorridor: "NH-51 · Tura Corridor", gpsSource: "SIMULATED GPS", activeRoute: "GUWAHATI -> TURA", etaMinutes: 185, isDemo: true },
+  { id: "TRK-521", shipmentId: "SHP-013", status: "on_route", risk: "MODERATE", latitude: "23.727100", longitude: "92.717600", speed: "32.00", heading: 180, currentCorridor: "NH-54 · Mizoram Corridor", gpsSource: "SIMULATED GPS", activeRoute: "AIZAWL -> LUNGLEI", etaMinutes: 260, isDemo: true },
 ];
 
 export const demoIncidents: InsertIncident[] = [
@@ -195,6 +207,11 @@ export const demoIncidents: InsertIncident[] = [
 
 function seedInMemory() {
   const now = new Date();
+  memoryShipments.clear();
+  memoryVehicles.clear();
+  memoryIncidents.clear();
+  memoryVehicleLocationHistory.length = 0;
+
   demoShipments.forEach(s => {
     memoryShipments.set(s.id, {
       id: s.id,
@@ -203,25 +220,56 @@ function seedInMemory() {
       origin: s.origin,
       destination: s.destination,
       status: s.status ?? "planned",
+      plannedEtaMinutes: s.plannedEtaMinutes ?? s.etaMinutes ?? 0,
       etaMinutes: s.etaMinutes ?? 0,
+      delayMinutes: s.delayMinutes ?? 0,
+      delayReason: s.delayReason ?? "On schedule",
+      assignedVehicleId: s.assignedVehicleId ?? null,
+      activeRoute: s.activeRoute ?? null,
       isDemo: true,
       createdAt: now,
       updatedAt: now,
     });
   });
+
   demoVehicles.forEach(v => {
+    const lat = String(v.latitude);
+    const lon = String(v.longitude);
+    const speed = v.speed ? String(v.speed) : "0.00";
+    const heading = v.heading ?? 0;
+    const currentCorridor = v.currentCorridor ?? null;
+    const gpsSource = v.gpsSource ?? "SIMULATED GPS";
+
     memoryVehicles.set(v.id, {
       id: v.id,
       shipmentId: v.shipmentId ?? null,
       status: v.status ?? "idle",
       risk: v.risk ?? "LOW",
-      latitude: String(v.latitude),
-      longitude: String(v.longitude),
+      latitude: lat,
+      longitude: lon,
+      speed,
+      heading,
+      currentCorridor,
+      gpsSource,
+      activeRoute: v.activeRoute ?? null,
       etaMinutes: v.etaMinutes ?? 0,
       isDemo: true,
       lastUpdated: now,
     });
+
+    memoryVehicleLocationHistory.push({
+      id: nextLocationHistoryId++,
+      vehicleId: v.id,
+      latitude: lat,
+      longitude: lon,
+      speed,
+      heading,
+      currentCorridor,
+      gpsSource,
+      timestamp: now,
+    });
   });
+
   demoIncidents.forEach(i => {
     memoryIncidents.set(i.id, {
       id: i.id,
@@ -441,16 +489,42 @@ export async function updateIncidentStatus(
 ): Promise<Incident | undefined> {
   const now = new Date();
   const existing = memoryIncidents.get(id);
+  let updatedAccessibility = existing?.roadAccessibility;
+  if (status === "VERIFIED" && existing) {
+    if (existing.roadAccessibility === "blocked" || existing.roadAccessibility === "restricted") {
+      // preserve explicit accessibility
+    } else if (
+      existing.type === "Road Blockage" ||
+      existing.type === "Bridge Damage" ||
+      (["HIGH", "CRITICAL"].includes(existing.severity) && ["Landslide", "Flood", "Road Damage"].includes(existing.type))
+    ) {
+      updatedAccessibility = "blocked";
+    }
+  } else if (status === "REJECTED" && existing) {
+    if (existing.roadAccessibility === "blocked") {
+      updatedAccessibility = "accessible";
+    }
+  }
+
   if (existing) {
     existing.status = status;
+    if (updatedAccessibility) existing.roadAccessibility = updatedAccessibility;
     existing.updatedAt = now;
   }
 
   const db = await getDb();
   if (db) {
     try {
-      await db.update(incidents).set({ status, updatedAt: now }).where(eq(incidents.id, id));
-      await appendAuditEvent({ actorId, action: `incident.${status.toLowerCase()}`, entityType: "incident", entityId: id });
+      const updateData: any = { status, updatedAt: now };
+      if (updatedAccessibility) updateData.roadAccessibility = updatedAccessibility;
+      await db.update(incidents).set(updateData).where(eq(incidents.id, id));
+      await appendAuditEvent({
+        actorId,
+        action: `incident.${status.toLowerCase()}`,
+        entityType: "incident",
+        entityId: id,
+        details: JSON.stringify({ status, roadAccessibility: updatedAccessibility ?? "unknown" }),
+      });
       const rows = await db.select().from(incidents).where(eq(incidents.id, id)).limit(1);
       if (rows.length > 0) return rows[0];
     } catch (err) {
@@ -458,8 +532,161 @@ export async function updateIncidentStatus(
     }
   }
 
-  await appendAuditEvent({ actorId, action: `incident.${status.toLowerCase()}`, entityType: "incident", entityId: id });
+  await appendAuditEvent({
+    actorId,
+    action: `incident.${status.toLowerCase()}`,
+    entityType: "incident",
+    entityId: id,
+    details: JSON.stringify({ status, roadAccessibility: updatedAccessibility ?? "unknown" }),
+  });
   return existing;
+}
+
+export async function updateIncidentRoadAccessibility(
+  id: string,
+  roadAccessibility: "accessible" | "restricted" | "blocked" | "unknown",
+  actorId?: number
+): Promise<Incident | undefined> {
+  const now = new Date();
+  const existing = memoryIncidents.get(id);
+  if (existing) {
+    existing.roadAccessibility = roadAccessibility;
+    existing.updatedAt = now;
+  }
+
+  const db = await getDb();
+  if (db) {
+    try {
+      await db.update(incidents).set({ roadAccessibility, updatedAt: now }).where(eq(incidents.id, id));
+      await appendAuditEvent({ actorId, action: `road_status.${roadAccessibility}`, entityType: "incident", entityId: id });
+      const rows = await db.select().from(incidents).where(eq(incidents.id, id)).limit(1);
+      if (rows.length > 0) return rows[0];
+    } catch (err) {
+      console.warn("[Database] updateIncidentRoadAccessibility failed in DB, saved to memory:", err);
+    }
+  }
+
+  await appendAuditEvent({ actorId, action: `road_status.${roadAccessibility}`, entityType: "incident", entityId: id });
+  return existing;
+}
+
+export async function getVehicle(id: string): Promise<Vehicle | undefined> {
+  const db = await getDb();
+  if (db) {
+    try {
+      const rows = await db.select().from(vehicles).where(eq(vehicles.id, id)).limit(1);
+      if (rows.length > 0) return rows[0];
+    } catch (err) {
+      console.warn("[Database] getVehicle failed, checking memory:", err);
+    }
+  }
+  return memoryVehicles.get(id);
+}
+
+export async function updateVehicle(
+  id: string,
+  update: Partial<Omit<Vehicle, "id">>
+): Promise<Vehicle | undefined> {
+  const now = new Date();
+  const existing = memoryVehicles.get(id);
+  if (existing) {
+    Object.assign(existing, update, { lastUpdated: now });
+  }
+
+  const db = await getDb();
+  if (db) {
+    try {
+      await db.update(vehicles).set({ ...update, lastUpdated: now }).where(eq(vehicles.id, id));
+      const rows = await db.select().from(vehicles).where(eq(vehicles.id, id)).limit(1);
+      if (rows.length > 0) return rows[0];
+    } catch (err) {
+      console.warn("[Database] updateVehicle failed in DB, saved to memory:", err);
+    }
+  }
+  return existing;
+}
+
+export async function recordVehicleLocation(input: {
+  vehicleId: string;
+  latitude: number | string;
+  longitude: number | string;
+  speed?: number | string;
+  heading?: number;
+  currentCorridor?: string;
+  gpsSource?: string;
+}): Promise<Vehicle | undefined> {
+  const now = new Date();
+  const latStr = typeof input.latitude === "number" ? input.latitude.toFixed(6) : input.latitude;
+  const lonStr = typeof input.longitude === "number" ? input.longitude.toFixed(6) : input.longitude;
+  const speedStr = input.speed !== undefined ? (typeof input.speed === "number" ? input.speed.toFixed(2) : input.speed) : "0.00";
+  const headingVal = input.heading ?? 0;
+  const corridorVal = input.currentCorridor ?? null;
+  const sourceVal = input.gpsSource ?? "SIMULATED GPS";
+
+  const updatedVehicle = await updateVehicle(input.vehicleId, {
+    latitude: latStr,
+    longitude: lonStr,
+    speed: speedStr,
+    heading: headingVal,
+    currentCorridor: corridorVal,
+    gpsSource: sourceVal,
+  });
+
+  const historyRecord: VehicleLocationHistory = {
+    id: nextLocationHistoryId++,
+    vehicleId: input.vehicleId,
+    latitude: latStr,
+    longitude: lonStr,
+    speed: speedStr,
+    heading: headingVal,
+    currentCorridor: corridorVal,
+    gpsSource: sourceVal,
+    timestamp: now,
+  };
+  memoryVehicleLocationHistory.push(historyRecord);
+
+  const db = await getDb();
+  if (db) {
+    try {
+      await db.insert(vehicleLocationHistory).values({
+        vehicleId: input.vehicleId,
+        latitude: latStr,
+        longitude: lonStr,
+        speed: speedStr,
+        heading: headingVal,
+        currentCorridor: corridorVal,
+        gpsSource: sourceVal,
+        timestamp: now,
+      });
+    } catch (err) {
+      console.warn("[Database] recordVehicleLocation history insert failed in DB:", err);
+    }
+  }
+
+  return updatedVehicle;
+}
+
+export async function getVehicleLocationHistory(
+  vehicleId: string,
+  limit = 30
+): Promise<VehicleLocationHistory[]> {
+  const db = await getDb();
+  if (db) {
+    try {
+      return await db
+        .select()
+        .from(vehicleLocationHistory)
+        .where(eq(vehicleLocationHistory.vehicleId, vehicleId))
+        .orderBy(desc(vehicleLocationHistory.timestamp))
+        .limit(limit);
+    } catch (err) {
+      console.warn("[Database] getVehicleLocationHistory failed, checking memory:", err);
+    }
+  }
+  return memoryVehicleLocationHistory
+    .filter(h => h.vehicleId === vehicleId)
+    .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+    .slice(0, limit);
 }
 
 export async function appendAuditEvent(input: InsertAuditEvent): Promise<AuditEvent | undefined> {
@@ -488,3 +715,463 @@ export async function appendAuditEvent(input: InsertAuditEvent): Promise<AuditEv
 
   return event;
 }
+
+export async function createShipment(input: Omit<InsertShipment, "id"> & { id?: string }): Promise<Shipment> {
+  const now = new Date();
+  const id = input.id || `SHP-${nanoid(6).toUpperCase()}`;
+  const shipment: Shipment = {
+    id,
+    name: input.name,
+    priority: input.priority ?? "NORMAL",
+    origin: input.origin,
+    destination: input.destination,
+    status: input.status ?? "planned",
+    etaMinutes: input.etaMinutes ?? 120,
+    plannedEtaMinutes: input.plannedEtaMinutes ?? input.etaMinutes ?? 120,
+    delayMinutes: input.delayMinutes ?? 0,
+    delayReason: input.delayReason ?? null,
+    assignedVehicleId: input.assignedVehicleId ?? null,
+    activeRoute: input.activeRoute ?? null,
+    isDemo: input.isDemo ?? false,
+    createdAt: now,
+    updatedAt: now,
+  };
+  memoryShipments.set(id, shipment);
+
+  const db = await getDb();
+  if (db) {
+    try {
+      await db.insert(shipments).values(shipment);
+    } catch (err) {
+      console.warn("[Database] createShipment failed in DB, saved to memory:", err);
+    }
+  }
+
+  return shipment;
+}
+
+export async function updateShipment(
+  id: string,
+  update: Partial<Omit<Shipment, "id">>
+): Promise<Shipment | undefined> {
+  const now = new Date();
+  const existing = memoryShipments.get(id);
+  if (existing) {
+    Object.assign(existing, update, { updatedAt: now });
+  }
+
+  const db = await getDb();
+  if (db) {
+    try {
+      await db.update(shipments).set({ ...update, updatedAt: now }).where(eq(shipments.id, id));
+      const rows = await db.select().from(shipments).where(eq(shipments.id, id)).limit(1);
+      if (rows.length > 0) return rows[0];
+    } catch (err) {
+      console.warn("[Database] updateShipment failed in DB, saved to memory:", err);
+    }
+  }
+  return existing;
+}
+
+export async function getShipment(id: string): Promise<Shipment | undefined> {
+  const db = await getDb();
+  if (db) {
+    try {
+      const rows = await db.select().from(shipments).where(eq(shipments.id, id)).limit(1);
+      if (rows.length > 0) return rows[0];
+    } catch (err) {
+      console.warn("[Database] getShipment failed, checking memory:", err);
+    }
+  }
+  return memoryShipments.get(id);
+}
+
+export type BroadcastAlert = {
+  id: string;
+  incidentId?: string | null;
+  alertType: "ROAD_BLOCKAGE" | "CRITICAL_INCIDENT" | "LOGISTICS_DELAY" | "EMERGENCY_ROUTING" | "NO_SAFE_ROUTE" | "OPERATIONAL_DISRUPTION" | string;
+  title: string;
+  message: string;
+  severity: "CRITICAL" | "HIGH" | "ADVISORY" | "INFO";
+  corridor: string;
+  roadSegment?: string | null;
+  affectedVehicleIds?: string[];
+  affectedShipmentIds?: string[];
+  targetRoles?: string[];
+  status: "ACTIVE" | "ACKNOWLEDGED" | "RESOLVED";
+  acknowledgedBy?: number | null;
+  acknowledgedByName?: string | null;
+  acknowledgedAt?: Date | null;
+  resolvedBy?: number | null;
+  resolvedAt?: Date | null;
+  actorId?: number | null;
+  actorRole?: string;
+  isDemo?: boolean;
+  createdAt: Date;
+  updatedAt?: Date;
+};
+
+const memoryAlerts: BroadcastAlert[] = [
+  {
+    id: "ALT-101",
+    incidentId: "INC-2401",
+    alertType: "ROAD_BLOCKAGE",
+    title: "Bridge Compromise Warning",
+    message: "NH-37 bridge at Jorhat closed to all heavy vehicles due to structural undermining.",
+    severity: "CRITICAL",
+    corridor: "NH-37 Jorhat",
+    roadSegment: "NH-37-JORHAT",
+    affectedVehicleIds: ["TRK-104"],
+    affectedShipmentIds: ["SHP-001"],
+    targetRoles: ["admin", "emergency_team", "logistics_manager", "truck_driver"],
+    status: "ACTIVE",
+    actorRole: "emergency_team",
+    createdAt: new Date(Date.now() - 1000 * 60 * 24),
+  },
+  {
+    id: "ALT-102",
+    incidentId: "INC-2402",
+    alertType: "CRITICAL_INCIDENT",
+    title: "Flash Flood Watch",
+    message: "High rainfall warning in Cachar and Dima Hasao districts. Emergency convoys use caution.",
+    severity: "HIGH",
+    corridor: "NH-6 Shillong / Silchar",
+    roadSegment: "NH-6-SHILLONG",
+    affectedVehicleIds: ["TRK-303"],
+    affectedShipmentIds: ["SHP-004"],
+    targetRoles: ["admin", "emergency_team"],
+    status: "ACTIVE",
+    actorRole: "emergency_team",
+    createdAt: new Date(Date.now() - 1000 * 60 * 55),
+  },
+  {
+    id: "ALT-103",
+    incidentId: "INC-2403",
+    alertType: "OPERATIONAL_DISRUPTION",
+    title: "Landslide Clearance in Progress",
+    message: "NH-2 Kohima approach single-lane traffic open with police escort.",
+    severity: "HIGH",
+    corridor: "NH-2 Kohima",
+    roadSegment: "NH-2-KOHIMA",
+    affectedVehicleIds: ["TRK-104", "TRK-202"],
+    affectedShipmentIds: ["SHP-002"],
+    targetRoles: ["admin", "emergency_team", "field_officer"],
+    status: "ACKNOWLEDGED",
+    acknowledgedByName: "Disaster Control Unit",
+    acknowledgedAt: new Date(Date.now() - 1000 * 60 * 60),
+    actorRole: "emergency_team",
+    createdAt: new Date(Date.now() - 1000 * 60 * 120),
+  },
+  {
+    id: "ALT-104",
+    incidentId: undefined,
+    alertType: "LOGISTICS_DELAY",
+    title: "Fuel Convoys Priority Corridor",
+    message: "Green corridor operational Guwahati to Imphal via Kohima for essential supplies.",
+    severity: "ADVISORY",
+    corridor: "NH-2 / NH-39",
+    roadSegment: "NH-2-IMPHAL",
+    affectedVehicleIds: ["TRK-505"],
+    affectedShipmentIds: ["SHP-006"],
+    targetRoles: ["admin", "logistics_manager"],
+    status: "ACTIVE",
+    actorRole: "logistics_manager",
+    createdAt: new Date(Date.now() - 1000 * 60 * 240),
+  },
+];
+
+export async function listAlerts(limit = 50, filterRole?: string): Promise<BroadcastAlert[]> {
+  const db = await getDb();
+  let all: BroadcastAlert[] = [];
+  if (db && isDatabaseAvailable()) {
+    try {
+      const rows = await db.select().from(alerts).orderBy(desc(alerts.createdAt)).limit(limit * 2);
+      all = rows.map((r) => ({
+        id: r.id,
+        incidentId: r.incidentId,
+        alertType: r.alertType,
+        title: r.title,
+        message: r.message,
+        severity: r.severity as BroadcastAlert["severity"],
+        corridor: r.corridor,
+        roadSegment: r.roadSegment,
+        affectedVehicleIds: r.affectedVehicleIds ? JSON.parse(r.affectedVehicleIds) : [],
+        affectedShipmentIds: r.affectedShipmentIds ? JSON.parse(r.affectedShipmentIds) : [],
+        targetRoles: r.targetRoles ? JSON.parse(r.targetRoles) : [],
+        status: r.status as BroadcastAlert["status"],
+        acknowledgedBy: r.acknowledgedBy,
+        acknowledgedByName: r.acknowledgedByName,
+        acknowledgedAt: r.acknowledgedAt,
+        resolvedBy: r.resolvedBy,
+        resolvedAt: r.resolvedAt,
+        actorId: r.actorId,
+        actorRole: r.actorRole ?? undefined,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      }));
+    } catch (err) {
+      console.warn("[Database] listAlerts failed, falling back to memory:", err);
+      all = [...memoryAlerts];
+    }
+  } else {
+    all = [...memoryAlerts];
+  }
+
+  // Deduplicate and sort descending
+  const sorted = all.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+  if (!filterRole || filterRole === "admin") {
+    return sorted.slice(0, limit);
+  }
+
+  // Role targeting filter
+  const filtered = sorted.filter((a) => {
+    const roles = a.targetRoles ?? [];
+    if (filterRole === "truck_driver") {
+      const isTargeted = roles.includes("truck_driver");
+      const hasVehicle = a.affectedVehicleIds?.includes("TRK-104");
+      return isTargeted || hasVehicle;
+    }
+    if (filterRole === "emergency_team") {
+      const isTargeted = roles.includes("emergency_team");
+      const isHighOrCritical = a.severity === "CRITICAL" || a.severity === "HIGH";
+      return isTargeted || isHighOrCritical;
+    }
+    if (filterRole === "logistics_manager") {
+      const isTargeted = roles.includes("logistics_manager");
+      const isLogistics = a.alertType === "LOGISTICS_DELAY" || a.alertType === "ROAD_BLOCKAGE";
+      return isTargeted || isLogistics;
+    }
+    if (filterRole === "field_officer") {
+      return roles.includes("field_officer") || a.alertType === "ROAD_BLOCKAGE";
+    }
+    return true;
+  });
+
+  return filtered.slice(0, limit);
+}
+
+export async function getAlert(id: string): Promise<BroadcastAlert | undefined> {
+  const db = await getDb();
+  if (db && isDatabaseAvailable()) {
+    try {
+      const rows = await db.select().from(alerts).where(eq(alerts.id, id)).limit(1);
+      if (rows.length > 0) {
+        const r = rows[0];
+        return {
+          id: r.id,
+          incidentId: r.incidentId,
+          alertType: r.alertType,
+          title: r.title,
+          message: r.message,
+          severity: r.severity as BroadcastAlert["severity"],
+          corridor: r.corridor,
+          roadSegment: r.roadSegment,
+          affectedVehicleIds: r.affectedVehicleIds ? JSON.parse(r.affectedVehicleIds) : [],
+          affectedShipmentIds: r.affectedShipmentIds ? JSON.parse(r.affectedShipmentIds) : [],
+          targetRoles: r.targetRoles ? JSON.parse(r.targetRoles) : [],
+          status: r.status as BroadcastAlert["status"],
+          acknowledgedBy: r.acknowledgedBy,
+          acknowledgedByName: r.acknowledgedByName,
+          acknowledgedAt: r.acknowledgedAt,
+          resolvedBy: r.resolvedBy,
+          resolvedAt: r.resolvedAt,
+          actorId: r.actorId,
+          actorRole: r.actorRole ?? undefined,
+          createdAt: r.createdAt,
+          updatedAt: r.updatedAt,
+        };
+      }
+    } catch (err) {
+      console.warn("[Database] getAlert failed, checking memory:", err);
+    }
+  }
+  return memoryAlerts.find((a) => a.id === id);
+}
+
+export async function createAlert(input: {
+  incidentId?: string;
+  alertType?: string;
+  title: string;
+  message: string;
+  severity: "CRITICAL" | "HIGH" | "ADVISORY" | "INFO";
+  corridor: string;
+  roadSegment?: string;
+  affectedVehicleIds?: string[];
+  affectedShipmentIds?: string[];
+  targetRoles?: string[];
+  actorId?: number;
+  actorRole?: string;
+}): Promise<BroadcastAlert> {
+  const alertType = input.alertType ?? "OPERATIONAL_DISRUPTION";
+
+  // Deduplication Check:
+  // If an alert for the same incident and alertType is already ACTIVE or ACKNOWLEDGED, return it!
+  const existing = memoryAlerts.find(
+    (a) =>
+      a.status !== "RESOLVED" &&
+      ((input.incidentId && a.incidentId === input.incidentId && a.alertType === alertType) ||
+        (!input.incidentId && a.corridor === input.corridor && a.alertType === alertType && a.status === "ACTIVE"))
+  );
+
+  if (existing) {
+    return existing;
+  }
+
+  const alert: BroadcastAlert = {
+    id: `ALT-${Date.now().toString().slice(-6)}`,
+    incidentId: input.incidentId ?? null,
+    alertType,
+    title: input.title,
+    message: input.message,
+    severity: input.severity,
+    corridor: input.corridor,
+    roadSegment: input.roadSegment ?? null,
+    affectedVehicleIds: input.affectedVehicleIds ?? [],
+    affectedShipmentIds: input.affectedShipmentIds ?? [],
+    targetRoles: input.targetRoles ?? ["admin", "emergency_team", "logistics_manager", "truck_driver", "field_officer"],
+    status: "ACTIVE",
+    actorId: input.actorId ?? null,
+    actorRole: input.actorRole ?? "emergency_team",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  memoryAlerts.unshift(alert);
+
+  const db = await getDb();
+  if (db && isDatabaseAvailable()) {
+    try {
+      await db.insert(alerts).values({
+        id: alert.id,
+        incidentId: alert.incidentId,
+        alertType: alert.alertType,
+        severity: alert.severity,
+        title: alert.title,
+        message: alert.message,
+        corridor: alert.corridor,
+        roadSegment: alert.roadSegment,
+        affectedVehicleIds: JSON.stringify(alert.affectedVehicleIds),
+        affectedShipmentIds: JSON.stringify(alert.affectedShipmentIds),
+        targetRoles: JSON.stringify(alert.targetRoles),
+        status: alert.status,
+        actorId: alert.actorId,
+        actorRole: alert.actorRole,
+        isDemo: true,
+      });
+    } catch (err) {
+      console.warn("[Database] createAlert failed, persisted in memory fallback:", err);
+    }
+  }
+
+  await appendAuditEvent({
+    actorId: input.actorId,
+    action: "alert.created",
+    entityType: "alert",
+    entityId: alert.id,
+    details: JSON.stringify({
+      severity: alert.severity,
+      alertType: alert.alertType,
+      corridor: alert.corridor,
+      title: alert.title,
+      incidentId: alert.incidentId,
+      affectedVehicles: alert.affectedVehicleIds,
+      affectedShipments: alert.affectedShipmentIds,
+    }),
+  });
+
+  return alert;
+}
+
+export async function acknowledgeAlert(
+  id: string,
+  actorId: number,
+  actorName?: string
+): Promise<BroadcastAlert | undefined> {
+  const alert = memoryAlerts.find((a) => a.id === id);
+  const now = new Date();
+  if (alert) {
+    alert.status = "ACKNOWLEDGED";
+    alert.acknowledgedBy = actorId;
+    alert.acknowledgedByName = actorName ?? `Operator #${actorId}`;
+    alert.acknowledgedAt = now;
+    alert.updatedAt = now;
+  }
+
+  const db = await getDb();
+  if (db && isDatabaseAvailable()) {
+    try {
+      await db
+        .update(alerts)
+        .set({
+          status: "ACKNOWLEDGED",
+          acknowledgedBy: actorId,
+          acknowledgedByName: actorName ?? `Operator #${actorId}`,
+          acknowledgedAt: now,
+        })
+        .where(eq(alerts.id, id));
+    } catch (err) {
+      console.warn("[Database] acknowledgeAlert failed in DB:", err);
+    }
+  }
+
+  await appendAuditEvent({
+    actorId,
+    action: "alert.acknowledged",
+    entityType: "alert",
+    entityId: id,
+    details: JSON.stringify({ acknowledgedBy: actorId, acknowledgedByName: actorName, timestamp: now.toISOString() }),
+  });
+
+  return alert;
+}
+
+export async function resolveAlert(
+  id: string,
+  actorId: number,
+  resolutionNotes?: string
+): Promise<BroadcastAlert | undefined> {
+  const alert = memoryAlerts.find((a) => a.id === id);
+  const now = new Date();
+  if (alert) {
+    alert.status = "RESOLVED";
+    alert.resolvedBy = actorId;
+    alert.resolvedAt = now;
+    alert.updatedAt = now;
+  }
+
+  const db = await getDb();
+  if (db && isDatabaseAvailable()) {
+    try {
+      await db
+        .update(alerts)
+        .set({
+          status: "RESOLVED",
+          resolvedBy: actorId,
+          resolvedAt: now,
+        })
+        .where(eq(alerts.id, id));
+    } catch (err) {
+      console.warn("[Database] resolveAlert failed in DB:", err);
+    }
+  }
+
+  await appendAuditEvent({
+    actorId,
+    action: "alert.resolved",
+    entityType: "alert",
+    entityId: id,
+    details: JSON.stringify({ resolvedBy: actorId, resolutionNotes, timestamp: now.toISOString() }),
+  });
+
+  return alert;
+}
+
+export async function resolveAlertsForIncident(incidentId: string, actorId?: number): Promise<void> {
+  const matching = memoryAlerts.filter((a) => a.incidentId === incidentId && a.status !== "RESOLVED");
+  for (const a of matching) {
+    await resolveAlert(a.id, actorId ?? 1, `Incident ${incidentId} resolved/closed.`);
+  }
+}
+
+

@@ -19,17 +19,16 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { startLogin } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
-import { LayoutDashboard, LogOut, PanelLeft, Users } from "lucide-react";
+import { Compass, LayoutDashboard, LogOut, PanelLeft, ShieldCheck, Users } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
 import { Button } from "./ui/button";
+import { AuthDialog } from "./AuthDialog";
 
 const menuItems = [
-  { icon: LayoutDashboard, label: "Page 1", path: "/" },
-  { icon: Users, label: "Page 2", path: "/some-path" },
+  { icon: LayoutDashboard, label: "Dashboard", path: "/" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -46,36 +45,52 @@ export default function DashboardLayout({
     const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
     return saved ? parseInt(saved, 10) : DEFAULT_WIDTH;
   });
-  const { loading, user } = useAuth();
+  const { loading, user, login } = useAuth();
+  const [authOpen, setAuthOpen] = useState(false);
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_WIDTH_KEY, sidebarWidth.toString());
   }, [sidebarWidth]);
 
   if (loading) {
-    return <DashboardLayoutSkeleton />
+    return <DashboardLayoutSkeleton />;
   }
 
   if (!user) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="flex flex-col items-center gap-8 p-8 max-w-md w-full">
-          <div className="flex flex-col items-center gap-6">
-            <h1 className="text-2xl font-semibold tracking-tight text-center">
-              Sign in to continue
+      <div className="flex items-center justify-center min-h-screen bg-[#f4f7f9] p-4">
+        <div className="flex flex-col items-center gap-6 p-8 max-w-md w-full bg-white rounded-2xl border border-slate-200 shadow-xl">
+          <div className="grid h-12 w-12 place-items-center rounded-2xl bg-orange-400 text-[#102b35] shadow-lg shadow-orange-400/20">
+            <Compass size={28} strokeWidth={2.4} />
+          </div>
+          <div className="flex flex-col items-center gap-2 text-center">
+            <h1 className="text-xl font-bold tracking-tight text-slate-950">
+              NER-LogiAI Operations
             </h1>
-            <p className="text-sm text-muted-foreground text-center max-w-sm">
-              Access to this dashboard requires authentication. Continue to launch the login flow.
+            <p className="text-xs text-slate-500 max-w-sm">
+              Northeast Region Logistics Intelligence platform. Sign in to access operational views and RBAC capabilities.
             </p>
           </div>
-          <Button
-            onClick={() => startLogin()}
-            size="lg"
-            className="w-full shadow-lg hover:shadow-xl transition-all"
-          >
-            Sign in
-          </Button>
+          <div className="w-full space-y-2.5">
+            <Button
+              onClick={() => login({ role: "admin" })}
+              size="lg"
+              className="w-full bg-[#0d2530] text-white hover:bg-[#153743] shadow-md transition-all gap-2 text-xs"
+            >
+              <ShieldCheck size={16} />
+              Sign in as Administrator (Aditi Sharma)
+            </Button>
+            <Button
+              onClick={() => setAuthOpen(true)}
+              variant="outline"
+              size="lg"
+              className="w-full border-slate-200 text-slate-700 hover:bg-slate-50 text-xs"
+            >
+              Choose another operational role...
+            </Button>
+          </div>
         </div>
+        <AuthDialog open={authOpen} onOpenChange={setAuthOpen} />
       </div>
     );
   }
@@ -91,6 +106,7 @@ export default function DashboardLayout({
       <DashboardLayoutContent setSidebarWidth={setSidebarWidth}>
         {children}
       </DashboardLayoutContent>
+      <AuthDialog open={authOpen} onOpenChange={setAuthOpen} />
     </SidebarProvider>
   );
 }

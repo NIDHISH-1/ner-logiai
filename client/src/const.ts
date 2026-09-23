@@ -16,7 +16,10 @@ export const startLogin = () => {
   const oauthPortalUrl = import.meta.env.VITE_OAUTH_PORTAL_URL;
   const appId = import.meta.env.VITE_APP_ID;
   if (!oauthPortalUrl || !appId) {
-    console.info("[Auth] OAuth portal not configured; skipping external redirect.");
+    console.info("[Auth] Running standalone: opening prototype authentication dialog.");
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("ner-logiai:open-auth-dialog"));
+    }
     return;
   }
   const redirectUri = `${window.location.origin}/api/oauth/callback`;
