@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { AlertCircle, CheckCircle2, ShieldCheck, Truck } from "lucide-react";
+import { AlertCircle, CheckCircle2, CloudOff, ShieldCheck } from "lucide-react";
+import { generateStableActionId, saveOfflineAction } from "@/lib/offlineStore";
+import { getPersistedCache, setPersistedCache } from "@/lib/persistentCache";
 
 export function DriverAcceptRouteDialog({
   open,
@@ -13,12 +15,35 @@ export function DriverAcceptRouteDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onAccepted?: (routeLabel: string) => void;
+  onAccepted?: (routeLabel: string, isOffline?: boolean) => void;
 }) {
   const [driverNotes, setDriverNotes] = useState("");
+  const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const trpcUtils = trpc.useUtils();
-  const routeQuery = trpc.operations.route.useQuery();
-  const rec = routeQuery.data?.recommendation;
+  const routeQuery = trpc.operations.route.useQuery(undefined, {
+    retry: false,
+  });
+
+  useEffect(() => {
+    const handleOnline = () => setOnline(true);
+    const handleOffline = () => setOnline(false);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  // Cache route recommendation when online, or retrieve cached if offline
+  useEffect(() => {
+    if (routeQuery.data?.recommendation) {
+      setPersistedCache("route.TRK-104", routeQuery.data.recommendation);
+    }
+  }, [routeQuery.data]);
+
+  const cachedRec = getPersistedCache<any>("route.TRK-104")?.data;
+  const rec = routeQuery.data?.recommendation || cachedRec;
 
   const mutation = trpc.operations.acceptRoute.useMutation({
     onSuccess: async (data) => {
@@ -28,15 +53,58 @@ export function DriverAcceptRouteDialog({
         trpcUtils.operations.route.invalidate(),
       ]);
       toast.success("Alternate route decision recorded in system registry!");
-      onAccepted?.(data.routeLabel);
+      onAccepted?.(data.routeLabel, false);
       onOpenChange(false);
     },
     onError: (err: any) => {
-      toast.error(`Route acceptance error: ${err.message}`);
+      // If error was due to network disconnect, queue offline
+      if (!navigator.onLine || err.message?.includes("fetch") || err.message?.includes("network")) {
+        queueOfflineRouteAcceptance();
+      } else {
+        toast.error(`Route acceptance error: ${err.message}`);
+      }
     },
   });
 
+  const queueOfflineRouteAcceptance = () => {
+    const actionId = generateStableActionId("ROUTE_ACCEPTANCE", "TRK-104");
+    const routeLabel = rec?.routeLabel || "Route B (NH-6 / NH-27 Corridor)";
+    const alternateRoute = rec?.route?.join("-") || "Guwahati-Shillong-Imphal";
+    const acceptedAt = new Date().toISOString();
+
+    saveOfflineAction({
+      actionId,
+      actionType: "ROUTE_ACCEPTANCE",
+      createdAt: acceptedAt,
+      payload: {
+        routeId: alternateRoute,
+        vehicleId: "TRK-104",
+        routeLabel,
+        alternateRoute,
+        distanceKm: rec?.distanceKm ?? 440,
+        etaMinutes: rec?.etaMinutes ?? 253,
+        delayMinutes: 31,
+        delayReason: "Delay due to route change (+23 km safe detour avoiding blocked NH-37)",
+        humanInTheLoopConfirmed: true,
+        automaticVehicleRedirect: false,
+        acceptedAt,
+        driverNotes: driverNotes.trim() || undefined,
+      },
+      status: "PENDING",
+      retryCount: 0,
+    });
+
+    toast.info("Route confirmed locally. Queued as PENDING SYNC.");
+    onAccepted?.(routeLabel, true);
+    onOpenChange(false);
+  };
+
   const handleConfirm = () => {
+    if (!online) {
+      queueOfflineRouteAcceptance();
+      return;
+    }
+
     mutation.mutate({
       vehicleId: "TRK-104",
       routeLabel: rec?.routeLabel || "Route B (NH-6 / NH-27 Corridor)",
@@ -55,6 +123,11 @@ export function DriverAcceptRouteDialog({
         <DialogHeader>
           <div className="flex items-center gap-2">
             <Badge className="border-0 bg-emerald-100 text-emerald-800">HUMAN-IN-THE-LOOP ACTION</Badge>
+            {!online && (
+              <Badge variant="outline" className="border-amber-400 bg-amber-50 text-amber-900 text-[10px] font-bold flex items-center gap-1">
+                <CloudOff size={11} /> OFFLINE MODE
+              </Badge>
+            )}
             <Badge variant="outline" className="text-[11px] border-slate-200 text-slate-600">
               TRUCK #TRK-104
             </Badge>
@@ -80,6 +153,11 @@ export function DriverAcceptRouteDialog({
                 Accepting this route logs your confirmation in the operational audit log.
                 <strong> The system will NOT automatically redirect or steer your vehicle.</strong> You maintain full manual control.
               </p>
+              {!online && (
+                <p className="text-[11px] text-amber-900 font-semibold pt-1 border-t border-amber-200">
+                  ⚡ Network disconnected: Confirmation will be stored as LOCAL CONFIRMATION (PENDING SYNC) and synchronized upon reconnect.
+                </p>
+              )}
             </div>
           </div>
 
@@ -132,10 +210,14 @@ export function DriverAcceptRouteDialog({
               size="sm"
               disabled={mutation.isPending}
               onClick={handleConfirm}
-              className="gap-2 bg-emerald-600 text-white hover:bg-emerald-700 text-xs"
+              className={`gap-2 text-white text-xs ${!online ? "bg-amber-600 hover:bg-amber-700" : "bg-emerald-600 hover:bg-emerald-700"}`}
             >
               <ShieldCheck size={14} />
-              {mutation.isPending ? "Recording Acceptance..." : "Confirm & Accept Route"}
+              {mutation.isPending
+                ? "Recording Acceptance..."
+                : !online
+                ? "Confirm Offline (Queue Sync)"
+                : "Confirm & Accept Route"}
             </Button>
           </div>
         </div>

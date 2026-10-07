@@ -5,7 +5,8 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { sdk } from "./_core/sdk";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { appendAuditEvent, createAlert, createIncident, createShipment, getAlert, acknowledgeAlert, resolveAlert, resolveAlertsForIncident, getDb, getIncidentById, getUserByOpenId, getVehicle, listAlerts, listAuditEvents, listIncidents, listShipments, listVehicles, listWeatherSnapshots, saveWeatherSnapshots, seedDemoData, updateIncidentRoadAccessibility, updateIncidentStatus, updateShipment, updateVehicle, upsertUser, recordVehicleLocation, getVehicleLocationHistory, isDatabaseAvailable } from "./db";
+import { nanoid } from "nanoid";
+import { appendAuditEvent, createAlert, createIncident, createShipment, getAlert, acknowledgeAlert, resolveAlert, resolveAlertsForIncident, getDb, getIncidentById, getUserByOpenId, getUserByEmail, saveUserCredential, verifyUserCredential, getVehicle, listAlerts, listAuditEvents, listIncidents, listShipments, listVehicles, listWeatherSnapshots, saveWeatherSnapshots, seedDemoData, updateIncidentRoadAccessibility, updateIncidentStatus, updateShipment, updateVehicle, upsertUser, recordVehicleLocation, getVehicleLocationHistory, isDatabaseAvailable } from "./db";
 import type { User } from "../drizzle/schema";
 import { demoRiskScenarios, getDemoRiskPredictions, LIVE_WEATHER_DATA_LABEL, WEATHER_DATA_LABEL, predictRisk } from "./riskEngine";
 import { corridorCoordinates, fetchLiveWeather } from "./weatherProvider";
@@ -14,6 +15,7 @@ import { buildRoadGraphWithIncidents, optimizeRoute, type RouteNodeId } from "./
 import { calculateGpsFreshness, matchVehicleToCorridor, simulatedGpsProvider } from "./gpsEngine";
 import { calculateOperationalEta, formatEtaDuration } from "./etaEngine";
 import { evaluateEmergencyImpact, buildAlertDraftsFromImpact, buildNoSafeRouteAlert } from "./emergencyImpactEngine";
+import { AnalyticsEngine } from "./analyticsEngine";
 
 const fallbackSnapshot = {
   generatedAt: "2026-09-08T13:30:00.000Z",
@@ -95,7 +97,7 @@ async function persistRiskWeatherSnapshots(predictions: ReturnType<typeof getDem
   })));
 }
 
-async function getWeatherAwareRiskPredictions() {
+export async function getWeatherAwareRiskPredictions() {
   return Promise.all(demoRiskScenarios.map(async scenario => {
     const weather = await fetchLiveWeather(corridorCoordinates[scenario.id] ?? { latitude: 26.1445, longitude: 91.7362 }, scenario.weather);
     return { id: scenario.id, label: scenario.label, prediction: predictRisk({ ...scenario.features, weather }) };
@@ -108,7 +110,7 @@ function weatherSourceLabel(predictions: Awaited<ReturnType<typeof getWeatherAwa
   return `${LIVE_WEATHER_DATA_LABEL} / ${WEATHER_DATA_LABEL}`;
 }
 
-function enrichVehicle(v: any) {
+export function enrichVehicle(v: any) {
   const freshness = calculateGpsFreshness(v.lastUpdated);
   const lat = Number(v.latitude) || 26.1445;
   const lon = Number(v.longitude) || 91.7362;
@@ -123,12 +125,14 @@ function enrichVehicle(v: any) {
     isSimulated: (v.gpsSource || "SIMULATED GPS").includes("SIMULATED"),
     freshness: freshness.freshness,
     freshnessLabel: freshness.label,
+    gpsFreshnessCategory: freshness.freshness,
+    isStale: freshness.freshness === "STALE",
     currentCorridor: v.currentCorridor || corridorMatch.corridorName,
     nearestRoadSegment: corridorMatch.nearestSegment,
   };
 }
 
-function enrichShipment(s: any, vehicleMap: Map<string, any>) {
+export function enrichShipment(s: any, vehicleMap: Map<string, any>) {
   const planned = s.plannedEtaMinutes ?? s.etaMinutes ?? 120;
   const current = s.etaMinutes ?? planned;
   const delay = s.delayMinutes ?? Math.max(0, current - planned);
@@ -140,6 +144,7 @@ function enrichShipment(s: any, vehicleMap: Map<string, any>) {
     delayMinutes: delay,
     delayReason: s.delayReason || (delay > 0 ? "Delay due to transit conditions" : "On schedule"),
     priority: s.priority ?? "NORMAL",
+    isDelayed: delay > 0,
     assignedVehicle: assignedVeh ? {
       id: assignedVeh.id,
       status: assignedVeh.status,
@@ -151,7 +156,7 @@ function enrichShipment(s: any, vehicleMap: Map<string, any>) {
   };
 }
 
-async function buildPersistedSnapshot() {
+export async function buildPersistedSnapshot() {
   const [rawVehicles, rawShipments, incidents] = await Promise.all([listVehicles(50), listShipments(50), listIncidents(50)]);
   if (!rawVehicles.length && !rawShipments.length && !incidents.length) return fallbackSnapshot;
   
@@ -261,6 +266,103 @@ export const appRouter = router({
         const user = await getUserByOpenId(openId);
         return { success: true, token, user };
       }),
+    signup: publicProcedure
+      .input(
+        z.object({
+          name: z.string().min(2, "Name must be at least 2 characters").max(100),
+          email: z.string().email("Invalid email address"),
+          password: z.string().min(6, "Password must be at least 6 characters"),
+          confirmPassword: z.string().min(6, "Password confirmation required"),
+          organization: z.string().max(120).optional(),
+          requestedRole: z
+            .enum(["admin", "field_officer", "truck_driver", "logistics_manager", "emergency_team", "viewer"])
+            .default("viewer"),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (input.password !== input.confirmPassword) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Password and password confirmation do not match.",
+          });
+        }
+
+        const normalizedEmail = input.email.trim().toLowerCase();
+        const existing = await getUserByEmail(normalizedEmail);
+        if (existing) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "An account with this email address already exists. Please sign in instead.",
+          });
+        }
+
+        const openId = `user_${nanoid(16)}`;
+        const isAdmin = input.requestedRole === "admin";
+        const authRole: "admin" | "user" = isAdmin ? "admin" : "user";
+
+        await upsertUser({
+          openId,
+          name: input.name.trim(),
+          email: normalizedEmail,
+          loginMethod: "standalone_password",
+          role: authRole,
+          operationalRole: input.requestedRole,
+          lastSignedIn: new Date(),
+        });
+
+        await saveUserCredential(normalizedEmail, openId, input.password, input.organization?.trim());
+
+        const token = await sdk.createSessionToken(openId, {
+          name: input.name.trim(),
+          expiresInMs: ONE_YEAR_MS,
+        });
+
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.cookie(COOKIE_NAME, token, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+
+        const user = await getUserByOpenId(openId);
+        return { success: true, token, user, role: input.requestedRole };
+      }),
+    loginWithPassword: publicProcedure
+      .input(
+        z.object({
+          email: z.string().email("Invalid email address"),
+          password: z.string().min(1, "Password is required"),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const normalizedEmail = input.email.trim().toLowerCase();
+        const credResult = await verifyUserCredential(normalizedEmail, input.password);
+        if (!credResult.valid || !credResult.openId) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Invalid email or password.",
+          });
+        }
+
+        const user = await getUserByOpenId(credResult.openId);
+        if (!user) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "User account not found.",
+          });
+        }
+
+        await upsertUser({
+          openId: user.openId,
+          lastSignedIn: new Date(),
+        });
+
+        const token = await sdk.createSessionToken(user.openId, {
+          name: user.name || "User",
+          expiresInMs: ONE_YEAR_MS,
+        });
+
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.cookie(COOKIE_NAME, token, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+
+        return { success: true, token, user };
+      }),
     switchRole: protectedProcedure
       .input(
         z.object({
@@ -319,28 +421,83 @@ export const appRouter = router({
       return { status: "SYNCED" as const, incident, duplicate: false };
     }),
     reviewIncident: publicProcedure.input(z.object({ id: z.string().min(1), status: z.enum(["UNDER_REVIEW", "VERIFIED", "REJECTED"]) })).mutation(({ input }) => updateIncidentStatus(input.id, input.status)),
+    resolveIncidentConflict: publicProcedure.input(z.object({
+      incidentId: z.string().min(1),
+      resolution: z.enum(["KEEP_SERVER", "FORK_LOCAL"]),
+      localPayload: incidentInput.optional(),
+    })).mutation(async ({ input }) => {
+      const existing = await getIncidentById(input.incidentId);
+      if (input.resolution === "KEEP_SERVER") {
+        await appendAuditEvent({
+          action: "incident.conflict_resolved",
+          entityType: "incident",
+          entityId: input.incidentId,
+          details: JSON.stringify({ resolution: "KEEP_SERVER", message: "Preserved authoritative server record and discarded local edit." }),
+        });
+        return { status: "RESOLVED" as const, resolution: "KEEP_SERVER" as const, incident: existing };
+      }
+
+      // FORK_LOCAL
+      const payload = input.localPayload;
+      const forkId = `INC-OFF-FORK-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`.slice(0, 32);
+      const forkedIncident = await createIncident({
+        id: forkId,
+        type: payload?.type ?? existing?.type ?? "Other",
+        severity: normalizeSeverity(payload?.severity ?? (existing?.severity as any) ?? "MODERATE"),
+        status: "UNVERIFIED",
+        description: `[FORKED REPORT] ${payload?.description ?? existing?.description ?? "Field report"}`,
+        latitude: payload ? payload.latitude.toFixed(6) : (existing?.latitude ?? "26.144500"),
+        longitude: payload ? payload.longitude.toFixed(6) : (existing?.longitude ?? "91.736200"),
+        roadAccessibility: payload?.roadAccessibility ?? existing?.roadAccessibility ?? "unknown",
+        reporterRole: payload?.reporterRole ?? "field_officer",
+        photoUrl: payload?.photoUrl ?? existing?.photoUrl ?? undefined,
+        isDemo: true,
+        occurredAt: payload?.occurredAt ?? new Date(),
+      });
+      await appendAuditEvent({
+        action: "incident.conflict_forked",
+        entityType: "incident",
+        entityId: forkId,
+        details: JSON.stringify({ originalIncidentId: input.incidentId, forkedId: forkId, resolution: "FORK_LOCAL" }),
+      });
+      return { status: "RESOLVED" as const, resolution: "FORK_LOCAL" as const, incident: forkedIncident };
+    }),
   }),
   access: router({
-    current: protectedProcedure.query(({ ctx }) => ({
-      authRole: ctx.user.role,
-      operationalRole: ctx.user.operationalRole,
-      capabilities: {
-        viewOperations: true,
-        createIncident: ctx.user.role === "admin" || ["field_officer", "truck_driver", "emergency_team"].includes(ctx.user.operationalRole),
-        reviewIncident: ctx.user.role === "admin",
-        viewAudit: ctx.user.role === "admin" || ctx.user.operationalRole === "logistics_manager",
-      },
-    })),
+    current: publicProcedure.query(({ ctx }) => {
+      if (!ctx.user) {
+        return {
+          authRole: "user" as const,
+          operationalRole: "viewer" as const,
+          capabilities: {
+            viewOperations: true,
+            createIncident: false,
+            reviewIncident: false,
+            viewAudit: false,
+          },
+        };
+      }
+      return {
+        authRole: ctx.user.role,
+        operationalRole: ctx.user.operationalRole,
+        capabilities: {
+          viewOperations: true,
+          createIncident: ctx.user.role === "admin" || ["field_officer", "truck_driver", "emergency_team"].includes(ctx.user.operationalRole),
+          reviewIncident: ctx.user.role === "admin",
+          viewAudit: ctx.user.role === "admin" || ctx.user.operationalRole === "logistics_manager",
+        },
+      };
+    }),
   }),
   operations: router({
-    snapshot: protectedProcedure.query(async ({ ctx }) => {
+    snapshot: publicProcedure.query(async ({ ctx }) => {
       const [rawIncidents, rawVehicles, rawShipments] = await Promise.all([listIncidents(100), listVehicles(100), listShipments(100)]);
       const vehicleMap = new Map(rawVehicles.map(v => [v.id, v]));
       const allVehicles = rawVehicles.map(enrichVehicle);
       const allShipments = rawShipments.map(s => enrichShipment(s, vehicleMap));
       const dbAvailable = isDatabaseAvailable();
 
-      if (ctx.user.role === "admin" || ctx.user.operationalRole === "admin" || ctx.user.operationalRole === "logistics_manager") {
+      if (!ctx.user || ctx.user.role === "admin" || ctx.user.operationalRole === "admin" || ctx.user.operationalRole === "logistics_manager") {
         return { databaseAvailable: dbAvailable, incidents: rawIncidents, vehicles: allVehicles, shipments: allShipments };
       }
       if (ctx.user.operationalRole === "truck_driver") {
@@ -361,23 +518,23 @@ export const appRouter = router({
       }
       return {
         databaseAvailable: dbAvailable,
-        incidents: rawIncidents.filter(incident => incident.reporterId === ctx.user.id || ["HIGH", "CRITICAL"].includes(incident.severity)),
+        incidents: rawIncidents.filter(incident => incident.reporterId === ctx.user?.id || ["HIGH", "CRITICAL"].includes(incident.severity)),
         vehicles: [],
         shipments: [],
       };
     }),
-    vehicles: operationalProcedure(["admin", "field_officer", "truck_driver", "logistics_manager", "emergency_team"]).query(async ({ ctx }) => {
+    vehicles: publicProcedure.query(async ({ ctx }) => {
       const rawVehicles = await listVehicles(100);
       const allVehicles = rawVehicles.map(enrichVehicle);
-      if (ctx.user.operationalRole === "truck_driver") {
+      if (ctx.user?.operationalRole === "truck_driver") {
         return allVehicles.filter(v => v.id === "TRK-104");
       }
-      if (ctx.user.operationalRole === "emergency_team") {
+      if (ctx.user?.operationalRole === "emergency_team") {
         return allVehicles.filter(v => ["HIGH", "CRITICAL"].includes(v.risk));
       }
       return allVehicles;
     }),
-    vehicleById: operationalProcedure(["admin", "field_officer", "truck_driver", "logistics_manager", "emergency_team"]).input(z.object({
+    vehicleById: publicProcedure.input(z.object({
       vehicleId: z.string(),
     })).query(async ({ input }) => {
       const v = await getVehicle(input.vehicleId);
@@ -435,19 +592,19 @@ export const appRouter = router({
       const v = await getVehicle(input.vehicleId);
       return { success: true, vehicle: v ? enrichVehicle(v) : null };
     }),
-    shipments: operationalProcedure(["admin", "field_officer", "truck_driver", "logistics_manager", "emergency_team"]).query(async ({ ctx }) => {
+    shipments: publicProcedure.query(async ({ ctx }) => {
       const [rawShipments, rawVehicles] = await Promise.all([listShipments(100), listVehicles(100)]);
       const vehicleMap = new Map(rawVehicles.map(v => [v.id, v]));
       const allShipments = rawShipments.map(s => enrichShipment(s, vehicleMap));
-      if (ctx.user.operationalRole === "truck_driver") {
+      if (ctx.user?.operationalRole === "truck_driver") {
         return allShipments.filter(s => s.id === "SHP-001");
       }
-      if (ctx.user.operationalRole === "emergency_team") {
+      if (ctx.user?.operationalRole === "emergency_team") {
         return allShipments.filter(s => s.priority === "CRITICAL");
       }
       return allShipments;
     }),
-    shipmentById: operationalProcedure(["admin", "field_officer", "truck_driver", "logistics_manager", "emergency_team"]).input(z.object({
+    shipmentById: publicProcedure.input(z.object({
       shipmentId: z.string(),
     })).query(async ({ input }) => {
       const s = await listShipments(100).then(list => list.find(item => item.id === input.shipmentId));
@@ -456,7 +613,7 @@ export const appRouter = router({
       const vehicleMap = new Map(rawVehicles.map(v => [v.id, v]));
       return enrichShipment(s, vehicleMap);
     }),
-    calculateEta: operationalProcedure(["admin", "truck_driver", "logistics_manager", "emergency_team"]).input(z.object({
+    calculateEta: publicProcedure.input(z.object({
       routeDistanceKm: z.number().positive(),
       expectedSpeedKmH: z.number().optional(),
       currentVehicleSpeedKmH: z.number().optional(),
@@ -468,20 +625,20 @@ export const appRouter = router({
     })).query(({ input }) => {
       return calculateOperationalEta(input);
     }),
-    risk: operationalProcedure(["admin", "field_officer", "truck_driver", "logistics_manager", "emergency_team"]).query(async ({ ctx }) => {
+    risk: publicProcedure.query(async ({ ctx }) => {
       const predictions = await getWeatherAwareRiskPredictions();
       await persistRiskWeatherSnapshots(predictions);
-      if (ctx.user.operationalRole === "truck_driver") return { dataLabel: "SIMULATED / PROTOTYPE DATA", weatherDataLabel: weatherSourceLabel(predictions), predictions: predictions.filter(item => item.id === "NH-37-JORHAT"), advisory: "AI prediction — requires route safety validation." };
-      if (ctx.user.operationalRole === "emergency_team") return { dataLabel: "SIMULATED / PROTOTYPE DATA", weatherDataLabel: weatherSourceLabel(predictions), predictions: predictions.filter(item => item.prediction.riskLevel === "CRITICAL" || item.prediction.riskLevel === "HIGH"), advisory: "AI prediction — requires route safety validation." };
+      if (ctx.user?.operationalRole === "truck_driver") return { dataLabel: "SIMULATED / PROTOTYPE DATA", weatherDataLabel: weatherSourceLabel(predictions), predictions: predictions.filter(item => item.id === "NH-37-JORHAT"), advisory: "AI prediction — requires route safety validation." };
+      if (ctx.user?.operationalRole === "emergency_team") return { dataLabel: "SIMULATED / PROTOTYPE DATA", weatherDataLabel: weatherSourceLabel(predictions), predictions: predictions.filter(item => item.prediction.riskLevel === "CRITICAL" || item.prediction.riskLevel === "HIGH"), advisory: "AI prediction — requires route safety validation." };
       return { dataLabel: "SIMULATED / PROTOTYPE DATA", weatherDataLabel: weatherSourceLabel(predictions), predictions, advisory: "AI prediction — requires route safety validation." };
     }),
-    safety: operationalProcedure(["admin", "field_officer", "truck_driver", "logistics_manager", "emergency_team"]).query(({ ctx }) => {
+    safety: publicProcedure.query(({ ctx }) => {
       const validations = getDemoSafetyValidations();
-      if (ctx.user.operationalRole === "truck_driver") return { dataLabel: "SIMULATED / PROTOTYPE DATA", validations: validations.filter(item => item.id === "NH-37-JORHAT"), advisory: "AI prediction — requires route safety validation." };
-      if (ctx.user.operationalRole === "emergency_team") return { dataLabel: "SIMULATED / PROTOTYPE DATA", validations: validations.filter(item => item.validation.status !== "SAFE"), advisory: "AI prediction — requires route safety validation." };
+      if (ctx.user?.operationalRole === "truck_driver") return { dataLabel: "SIMULATED / PROTOTYPE DATA", validations: validations.filter(item => item.id === "NH-37-JORHAT"), advisory: "AI prediction — requires route safety validation." };
+      if (ctx.user?.operationalRole === "emergency_team") return { dataLabel: "SIMULATED / PROTOTYPE DATA", validations: validations.filter(item => item.validation.status !== "SAFE"), advisory: "AI prediction — requires route safety validation." };
       return { dataLabel: "SIMULATED / PROTOTYPE DATA", validations, advisory: "AI prediction — requires route safety validation." };
     }),
-    route: operationalProcedure(["admin", "field_officer", "truck_driver", "logistics_manager", "emergency_team"]).input(z.object({ origin: z.enum(["GUWAHATI", "JORHAT", "KOHIMA", "SHILLONG", "IMPHAL", "REMOTE_BLOCKED"]).default("GUWAHATI"), destination: z.enum(["GUWAHATI", "JORHAT", "KOHIMA", "SHILLONG", "IMPHAL", "REMOTE_BLOCKED"]).default("IMPHAL") }).optional()).query(async ({ ctx, input }) => {
+    route: publicProcedure.input(z.object({ origin: z.enum(["GUWAHATI", "JORHAT", "KOHIMA", "SHILLONG", "IMPHAL", "REMOTE_BLOCKED"]).default("GUWAHATI"), destination: z.enum(["GUWAHATI", "JORHAT", "KOHIMA", "SHILLONG", "IMPHAL", "REMOTE_BLOCKED"]).default("IMPHAL") }).optional()).query(async ({ ctx, input }) => {
       const origin = (input?.origin ?? "GUWAHATI") as RouteNodeId;
       const destination = (input?.destination ?? "IMPHAL") as RouteNodeId;
       const [predictions, activeIncidents] = await Promise.all([
@@ -490,8 +647,8 @@ export const appRouter = router({
       ]);
       await persistRiskWeatherSnapshots(predictions);
       const roadGraph = buildRoadGraphWithIncidents(activeIncidents);
-      const recommendation = ctx.user.operationalRole === "truck_driver" ? optimizeRoute("GUWAHATI", "IMPHAL", predictions, roadGraph) : optimizeRoute(origin, destination, predictions, roadGraph);
-      if (recommendation.status === "NO SAFE ROUTE AVAILABLE") {
+      const recommendation = ctx.user?.operationalRole === "truck_driver" ? optimizeRoute("GUWAHATI", "IMPHAL", predictions, roadGraph) : optimizeRoute(origin, destination, predictions, roadGraph);
+      if (recommendation.status === "NO SAFE ROUTE AVAILABLE" && ctx.user) {
         await appendAuditEvent({
           actorId: ctx.user.id,
           action: "no_safe_route.detected",
@@ -587,6 +744,199 @@ export const appRouter = router({
         automaticVehicleRedirect: false,
         message: "Alternate route acknowledged and logged. Proceed following manual driver confirmation.",
       };
+    }),
+    syncRouteAcceptance: operationalProcedure(["truck_driver", "admin", "logistics_manager"]).input(z.object({
+      actionId: z.string().min(1),
+      vehicleId: z.string().default("TRK-104"),
+      routeLabel: z.string().min(2),
+      alternateRoute: z.string().min(2),
+      distanceKm: z.number().positive(),
+      etaMinutes: z.number().positive(),
+      delayMinutes: z.number().optional(),
+      delayReason: z.string().optional(),
+      humanInTheLoopConfirmed: z.boolean(),
+      automaticVehicleRedirect: z.boolean(),
+      acceptedAt: z.string(),
+    })).mutation(async ({ ctx, input }) => {
+      if (!input.humanInTheLoopConfirmed) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "humanInTheLoopConfirmed must be true." });
+      }
+      if (input.automaticVehicleRedirect) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "automaticVehicleRedirect must be false." });
+      }
+
+      const existingAudits = await listAuditEvents(50);
+      const isDuplicate = existingAudits.some(a => {
+        if (a.action === "route.accepted_by_driver" && a.entityId === input.vehicleId) {
+          try {
+            const parsed = JSON.parse(a.details || "{}");
+            if (parsed.actionId === input.actionId || parsed.acceptedAt === input.acceptedAt) return true;
+          } catch {}
+        }
+        return false;
+      });
+
+      if (isDuplicate) {
+        return {
+          status: "SYNCED" as const,
+          duplicate: true,
+          actionId: input.actionId,
+          vehicleId: input.vehicleId,
+          humanInTheLoopConfirmed: true,
+          automaticVehicleRedirect: false,
+        };
+      }
+
+      const vehicle = await getVehicle(input.vehicleId);
+      if (vehicle) {
+        await updateVehicle(input.vehicleId, {
+          status: "on_route",
+          etaMinutes: input.etaMinutes,
+          activeRoute: input.alternateRoute,
+        });
+      }
+      const allShipments = await listShipments(50);
+      const associatedShipment = allShipments.find(s => s.id === (vehicle?.shipmentId ?? "SHP-001") || s.id === "SHP-001");
+      const computedDelay = input.delayMinutes ?? (input.etaMinutes > 222 ? input.etaMinutes - 222 : 0);
+      const computedReason = input.delayReason ?? "Alternate route accepted offline and synchronized";
+
+      if (associatedShipment) {
+        await updateShipment(associatedShipment.id, {
+          etaMinutes: input.etaMinutes,
+          delayMinutes: computedDelay,
+          delayReason: computedReason,
+          status: "in_transit",
+          activeRoute: input.alternateRoute,
+        });
+      }
+
+      await appendAuditEvent({
+        actorId: ctx.user.id,
+        action: "route.accepted_by_driver",
+        entityType: "vehicle",
+        entityId: input.vehicleId,
+        details: JSON.stringify({
+          actionId: input.actionId,
+          routeLabel: input.routeLabel,
+          alternateRoute: input.alternateRoute,
+          distanceKm: input.distanceKm,
+          etaMinutes: input.etaMinutes,
+          delayMinutes: computedDelay,
+          delayReason: computedReason,
+          driverName: ctx.user.name,
+          acceptedAt: input.acceptedAt,
+          humanInTheLoopConfirmed: true,
+          automaticVehicleRedirect: false,
+          syncedFromOffline: true,
+        }),
+      });
+
+      return {
+        status: "SYNCED" as const,
+        duplicate: false,
+        actionId: input.actionId,
+        vehicleId: input.vehicleId,
+        humanInTheLoopConfirmed: true,
+        automaticVehicleRedirect: false,
+      };
+    }),
+    syncAlertAcknowledge: operationalProcedure(["admin", "emergency_team", "logistics_manager", "truck_driver"]).input(z.object({
+      actionId: z.string().min(1),
+      alertId: z.string().min(1),
+      acknowledgedAt: z.string().optional(),
+    })).mutation(async ({ ctx, input }) => {
+      const alert = await getAlert(input.alertId);
+      if (!alert) throw new TRPCError({ code: "NOT_FOUND", message: `Alert ${input.alertId} not found` });
+
+      if (ctx.user.operationalRole === "truck_driver") {
+        const isTargeted = alert.targetRoles?.includes("truck_driver") || alert.affectedVehicleIds?.includes("TRK-104");
+        if (!isTargeted) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Truck drivers can only acknowledge alerts affecting their vehicle or route." });
+        }
+      }
+
+      if (alert.status === "ACKNOWLEDGED") {
+        return { status: "SYNCED" as const, duplicate: true, actionId: input.actionId, alertId: input.alertId };
+      }
+
+      const updated = await acknowledgeAlert(input.alertId, ctx.user.id, ctx.user.name ?? `Operator #${ctx.user.id}`);
+      return { status: "SYNCED" as const, duplicate: false, actionId: input.actionId, alert: updated };
+    }),
+    syncRoadStatus: operationalProcedure(["field_officer", "admin", "emergency_team"]).input(z.object({
+      actionId: z.string().min(1),
+      incidentId: z.string().optional(),
+      corridor: z.string().min(2),
+      roadAccessibility: z.enum(["accessible", "restricted", "blocked", "unknown"]),
+      severity: z.enum(["LOW", "MODERATE", "HIGH", "CRITICAL"]).default("MODERATE"),
+      description: z.string().min(3),
+      latitude: z.number(),
+      longitude: z.number(),
+      updatedAt: z.string().optional(),
+    })).mutation(async ({ ctx, input }) => {
+      const existingAudits = await listAuditEvents(50);
+      const isDuplicate = existingAudits.some(a => {
+        if (a.action === "corridor.status_updated") {
+          try {
+            const parsed = JSON.parse(a.details || "{}");
+            if (parsed.actionId === input.actionId) return true;
+          } catch {}
+        }
+        return false;
+      });
+
+      if (isDuplicate) {
+        return { status: "SYNCED" as const, duplicate: true, actionId: input.actionId };
+      }
+
+      let targetIncident: any = null;
+      if (input.incidentId) {
+        targetIncident = await updateIncidentRoadAccessibility(input.incidentId, input.roadAccessibility, ctx.user.id);
+      } else {
+        targetIncident = await createIncident({
+          type: input.roadAccessibility === "blocked" ? "Road Blockage" : "Road Condition Update",
+          severity: input.severity,
+          status: "UNVERIFIED",
+          description: `[${input.corridor}] ${input.description}`,
+          latitude: input.latitude.toFixed(6),
+          longitude: input.longitude.toFixed(6),
+          roadAccessibility: input.roadAccessibility,
+          reporterId: ctx.user.id,
+          reporterRole: ctx.user.operationalRole,
+          isDemo: false,
+          occurredAt: input.updatedAt ? new Date(input.updatedAt) : new Date(),
+        }, ctx.user.id);
+      }
+
+      await appendAuditEvent({
+        actorId: ctx.user.id,
+        action: "corridor.status_updated",
+        entityType: "corridor",
+        entityId: input.corridor,
+        details: JSON.stringify({
+          actionId: input.actionId,
+          roadAccessibility: input.roadAccessibility,
+          incidentId: targetIncident?.id,
+          syncedFromOffline: true,
+        }),
+      });
+
+      if (targetIncident && (input.roadAccessibility === "blocked" || targetIncident.status === "VERIFIED")) {
+        const [rawVehicles, rawShipments] = await Promise.all([listVehicles(100), listShipments(100)]);
+        const vehicleMap = new Map(rawVehicles.map(v => [v.id, v]));
+        const shipments = rawShipments.map(s => enrichShipment(s, vehicleMap));
+        const vehicles = rawVehicles.map(enrichVehicle);
+        const impact = evaluateEmergencyImpact(targetIncident, vehicles, shipments);
+        const drafts = buildAlertDraftsFromImpact(impact, targetIncident);
+        for (const draft of drafts) {
+          await createAlert({
+            ...draft,
+            actorId: ctx.user.id,
+            actorRole: ctx.user.operationalRole,
+          });
+        }
+      }
+
+      return { status: "SYNCED" as const, duplicate: false, actionId: input.actionId, incident: targetIncident };
     }),
     updateRoadStatus: operationalProcedure(["field_officer", "admin", "emergency_team"]).input(z.object({
       incidentId: z.string().optional(),
@@ -714,8 +1064,8 @@ export const appRouter = router({
       });
       return shipment;
     }),
-    alerts: protectedProcedure.input(z.object({ limit: z.number().int().min(1).max(100).default(50) }).optional()).query(async ({ ctx, input }) => {
-      return listAlerts(input?.limit ?? 50, ctx.user.operationalRole);
+    alerts: publicProcedure.input(z.object({ limit: z.number().int().min(1).max(100).default(50) }).optional()).query(async ({ ctx, input }) => {
+      return listAlerts(input?.limit ?? 50, ctx.user?.operationalRole);
     }),
     acknowledgeAlert: operationalProcedure(["admin", "emergency_team", "logistics_manager", "truck_driver"]).input(z.object({
       alertId: z.string().min(1),
@@ -740,7 +1090,7 @@ export const appRouter = router({
       const updated = await resolveAlert(input.alertId, ctx.user.id, input.resolutionNotes);
       return { success: true, alert: updated };
     }),
-    emergencyImpact: operationalProcedure(["admin", "emergency_team", "logistics_manager", "field_officer", "truck_driver"]).input(z.object({
+    emergencyImpact: publicProcedure.input(z.object({
       incidentId: z.string().optional(),
       corridor: z.string().optional(),
     })).query(async ({ input }) => {
@@ -783,7 +1133,7 @@ export const appRouter = router({
         actorRole: ctx.user.operationalRole,
       });
     }),
-    corridors: protectedProcedure.query(async () => {
+    corridors: publicProcedure.query(async () => {
       const [predictions, validations, activeIncidents] = await Promise.all([
         getWeatherAwareRiskPredictions(),
         Promise.resolve(getDemoSafetyValidations()),
@@ -911,6 +1261,128 @@ export const appRouter = router({
       });
     }),
   }),
+  analytics: (() => {
+    const analyticsProcedure = publicProcedure.use(async ({ ctx, next }) => {
+      if (ctx.user && ctx.user.role !== "admin" && ctx.user.operationalRole === "truck_driver") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Truck drivers cannot access administrative analytics." });
+      }
+      return next({ ctx });
+    });
+
+    return router({
+      regionalOverview: analyticsProcedure
+        .input(z.object({ corridor: z.string().optional(), timeRange: z.string().optional() }).optional())
+        .query(async () => {
+          const [incidents, rawVehicles, rawShipments, alerts, predictions, validations] = await Promise.all([
+            listIncidents(100),
+            listVehicles(100),
+            listShipments(100),
+            listAlerts(100),
+            getWeatherAwareRiskPredictions(),
+            Promise.resolve(getDemoSafetyValidations()),
+          ]);
+          const vehicleMap = new Map(rawVehicles.map(v => [v.id, v]));
+          const vehicles = rawVehicles.map(enrichVehicle);
+          const shipments = rawShipments.map(s => enrichShipment(s, vehicleMap));
+          const corridorData = AnalyticsEngine.getCorridorAnalytics(incidents, vehicles, shipments, predictions, validations);
+          return AnalyticsEngine.getRegionalOverview(incidents, vehicles, shipments, alerts, corridorData.corridors);
+        }),
+      incidentAnalytics: analyticsProcedure
+        .input(z.object({ corridor: z.string().optional(), timeRange: z.string().optional() }).optional())
+        .query(async ({ input }) => {
+          const incidents = await listIncidents(100);
+          return AnalyticsEngine.getIncidentAnalytics(incidents, input);
+        }),
+      corridorAnalytics: analyticsProcedure.query(async () => {
+        const [incidents, rawVehicles, rawShipments, predictions, validations] = await Promise.all([
+          listIncidents(100),
+          listVehicles(100),
+          listShipments(100),
+          getWeatherAwareRiskPredictions(),
+          Promise.resolve(getDemoSafetyValidations()),
+        ]);
+        const vehicleMap = new Map(rawVehicles.map(v => [v.id, v]));
+        const vehicles = rawVehicles.map(enrichVehicle);
+        const shipments = rawShipments.map(s => enrichShipment(s, vehicleMap));
+        return AnalyticsEngine.getCorridorAnalytics(incidents, vehicles, shipments, predictions, validations);
+      }),
+      shipmentAnalytics: analyticsProcedure
+        .input(z.object({ corridor: z.string().optional(), priority: z.string().optional() }).optional())
+        .query(async ({ input }) => {
+          const [rawShipments, rawVehicles] = await Promise.all([listShipments(100), listVehicles(100)]);
+          const vehicleMap = new Map(rawVehicles.map(v => [v.id, v]));
+          const shipments = rawShipments.map(s => enrichShipment(s, vehicleMap));
+          return AnalyticsEngine.getShipmentAnalytics(shipments, input);
+        }),
+      fleetAnalytics: analyticsProcedure.query(async () => {
+        const rawVehicles = await listVehicles(100);
+        const vehicles = rawVehicles.map(enrichVehicle);
+        return AnalyticsEngine.getFleetAnalytics(vehicles);
+      }),
+      delayAnalytics: analyticsProcedure.query(async () => {
+        const [rawShipments, rawVehicles] = await Promise.all([listShipments(100), listVehicles(100)]);
+        const vehicleMap = new Map(rawVehicles.map(v => [v.id, v]));
+        const shipments = rawShipments.map(s => enrichShipment(s, vehicleMap));
+        return AnalyticsEngine.getDelayAnalytics(shipments);
+      }),
+      riskAnalytics: analyticsProcedure.query(async () => {
+        const [predictions, validations] = await Promise.all([
+          getWeatherAwareRiskPredictions(),
+          Promise.resolve(getDemoSafetyValidations()),
+        ]);
+        return AnalyticsEngine.getRiskAnalytics(predictions, validations);
+      }),
+      weatherAnalytics: analyticsProcedure.query(async () => {
+        const [incidents, rawVehicles, rawShipments, predictions, validations] = await Promise.all([
+          listIncidents(100),
+          listVehicles(100),
+          listShipments(100),
+          getWeatherAwareRiskPredictions(),
+          Promise.resolve(getDemoSafetyValidations()),
+        ]);
+        const vehicleMap = new Map(rawVehicles.map(v => [v.id, v]));
+        const vehicles = rawVehicles.map(enrichVehicle);
+        const shipments = rawShipments.map(s => enrichShipment(s, vehicleMap));
+        const corridorData = AnalyticsEngine.getCorridorAnalytics(incidents, vehicles, shipments, predictions, validations);
+        return AnalyticsEngine.getWeatherImpactAnalytics(predictions, corridorData.corridors);
+      }),
+      emergencyAnalytics: analyticsProcedure.query(async () => {
+        const [incidents, rawVehicles, rawShipments, alerts, predictions, validations] = await Promise.all([
+          listIncidents(100),
+          listVehicles(100),
+          listShipments(100),
+          listAlerts(100),
+          getWeatherAwareRiskPredictions(),
+          Promise.resolve(getDemoSafetyValidations()),
+        ]);
+        const vehicleMap = new Map(rawVehicles.map(v => [v.id, v]));
+        const vehicles = rawVehicles.map(enrichVehicle);
+        const shipments = rawShipments.map(s => enrichShipment(s, vehicleMap));
+        const corridorData = AnalyticsEngine.getCorridorAnalytics(incidents, vehicles, shipments, predictions, validations);
+        return AnalyticsEngine.getEmergencyAnalytics(alerts, corridorData.corridors);
+      }),
+      fieldOfficerAnalytics: analyticsProcedure.query(async () => {
+        const incidents = await listIncidents(100);
+        return AnalyticsEngine.getFieldOfficerAnalytics(incidents);
+      }),
+      fullReport: analyticsProcedure
+        .input(z.object({ corridor: z.string().optional(), timeRange: z.string().optional() }).optional())
+        .query(async ({ input }) => {
+          const [incidents, rawVehicles, rawShipments, alerts, predictions, validations] = await Promise.all([
+            listIncidents(100),
+            listVehicles(100),
+            listShipments(100),
+            listAlerts(100),
+            getWeatherAwareRiskPredictions(),
+            Promise.resolve(getDemoSafetyValidations()),
+          ]);
+          const vehicleMap = new Map(rawVehicles.map(v => [v.id, v]));
+          const vehicles = rawVehicles.map(enrichVehicle);
+          const shipments = rawShipments.map(s => enrichShipment(s, vehicleMap));
+          return AnalyticsEngine.getFullAnalyticsReport(incidents, vehicles, shipments, alerts, predictions, validations, input);
+        }),
+    });
+  })(),
 });
 
 export type AppRouter = typeof appRouter;

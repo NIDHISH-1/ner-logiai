@@ -66,9 +66,9 @@ export function FleetView({ onSelectRoute }: { onSelectRoute?: () => void }) {
             </span>
             <span className="text-xs text-slate-500">{vehicles.length} active convoys tracked</span>
           </div>
-          <h2 className="mt-2 text-2xl font-bold tracking-tight text-slate-900">Live Logistics & Fleet Intelligence</h2>
+          <h2 className="mt-2 text-2xl font-bold tracking-tight text-slate-900">Logistics & Fleet Intelligence</h2>
           <p className="mt-1 text-xs text-slate-500">
-            Real-time GPS vehicle tracking, corridor matching, automated delay calculations, and simulated waypoints.
+            Simulated GPS vehicle telemetry, corridor matching, automated delay calculations, and deterministic waypoints.
           </p>
         </div>
 

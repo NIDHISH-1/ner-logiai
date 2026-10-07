@@ -7,12 +7,14 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Compass, ShieldCheck, Truck, MapPin, Boxes, Siren, Eye, LogOut, CheckCircle2 } from "lucide-react";
+import { Compass, ShieldCheck, Truck, MapPin, Boxes, Siren, Eye, LogOut, CheckCircle2, Lock, UserPlus, LogIn, Sparkles, AlertCircle } from "lucide-react";
+import { useLocation } from "wouter";
 
 interface AuthDialogProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   onSuccess?: () => void;
+  initialTab?: "personas" | "login" | "signup";
 }
 
 const roleIcons: Record<string, typeof ShieldCheck> = {
@@ -24,18 +26,34 @@ const roleIcons: Record<string, typeof ShieldCheck> = {
   viewer: Eye,
 };
 
-export function AuthDialog({ open = false, onOpenChange, onSuccess }: AuthDialogProps) {
-  const { user, login, logout, isAuthenticated, loading } = useAuth();
+export function AuthDialog({ open = false, onOpenChange, onSuccess, initialTab = "personas" }: AuthDialogProps) {
+  const [, setLocation] = useLocation();
+  const { user, login, signup, loginWithCredentials, logout, isAuthenticated, loading } = useAuth();
   const [internalOpen, setInternalOpen] = useState(open);
-  const [customName, setCustomName] = useState("");
-  const [customEmail, setCustomEmail] = useState("");
-  const [selectedRole, setSelectedRole] = useState<OperationalRoleType>("admin");
+  const [activeTab, setActiveTab] = useState<"personas" | "login" | "signup">(initialTab);
+
+  // Sign In state
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+
+  // Sign Up state
+  const [signupName, setSignupName] = useState("");
+  const [signupEmail, setSignupEmail] = useState("");
+  const [signupPassword, setSignupPassword] = useState("");
+  const [signupConfirmPassword, setSignupConfirmPassword] = useState("");
+  const [signupOrganization, setSignupOrganization] = useState("");
+  const [signupRole, setSignupRole] = useState<OperationalRoleType>("logistics_manager");
+
+  const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const personasQuery = trpc.auth.personas.useQuery();
 
   useEffect(() => {
     setInternalOpen(open);
+    if (open) {
+      setError(null);
+    }
   }, [open]);
 
   useEffect(() => {
@@ -52,8 +70,9 @@ export function AuthDialog({ open = false, onOpenChange, onSuccess }: AuthDialog
     onOpenChange?.(nextOpen);
   };
 
-  const handleLogin = async (role: OperationalRoleType, name?: string, email?: string) => {
+  const handlePersonaLogin = async (role: OperationalRoleType, name?: string, email?: string) => {
     setSubmitting(true);
+    setError(null);
     try {
       const res = await login({
         role,
@@ -64,15 +83,79 @@ export function AuthDialog({ open = false, onOpenChange, onSuccess }: AuthDialog
       handleOpenChange(false);
       onSuccess?.();
     } catch (err: any) {
+      setError(err.message ?? "Authentication failed");
       toast.error(err.message ?? "Authentication failed");
     } finally {
       setSubmitting(false);
     }
   };
 
-  const handleCustomSubmit = (e: React.FormEvent) => {
+  const handleCredentialLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    handleLogin(selectedRole, customName || undefined, customEmail || undefined);
+    setError(null);
+    if (!loginEmail.trim() || !loginPassword) {
+      setError("Please enter both email and password.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res = await loginWithCredentials({
+        email: loginEmail.trim(),
+        password: loginPassword,
+      });
+      toast.success(`Welcome back, ${res.user?.name ?? "User"}!`);
+      handleOpenChange(false);
+      onSuccess?.();
+    } catch (err: any) {
+      const msg = err.message || "Invalid email or password.";
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSignupSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    if (!signupName.trim() || signupName.trim().length < 2) {
+      setError("Name must be at least 2 characters.");
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(signupEmail.trim())) {
+      setError("Please provide a valid email address.");
+      return;
+    }
+    if (signupPassword.length < 6) {
+      setError("Password must be at least 6 characters.");
+      return;
+    }
+    if (signupPassword !== signupConfirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const res = await signup({
+        name: signupName.trim(),
+        email: signupEmail.trim(),
+        password: signupPassword,
+        confirmPassword: signupConfirmPassword,
+        organization: signupOrganization.trim() || undefined,
+        requestedRole: signupRole,
+      });
+      toast.success(`Account created successfully! Welcome, ${res.user?.name ?? signupName}`);
+      handleOpenChange(false);
+      onSuccess?.();
+    } catch (err: any) {
+      const msg = err.message || "Failed to create account.";
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const personas = personasQuery.data ?? [
@@ -86,25 +169,31 @@ export function AuthDialog({ open = false, onOpenChange, onSuccess }: AuthDialog
 
   return (
     <Dialog open={internalOpen} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto p-6 bg-white border border-slate-200 shadow-2xl rounded-2xl">
+      <DialogContent className="max-w-2xl max-h-[92vh] overflow-y-auto p-6 bg-white border border-slate-200 shadow-2xl rounded-2xl">
         <DialogHeader className="space-y-2">
-          <div className="flex items-center gap-3">
-            <div className="grid h-10 w-10 place-items-center rounded-xl bg-orange-400 text-[#102b35] shadow-md shadow-orange-400/20">
-              <Compass size={22} strokeWidth={2.4} />
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="grid h-10 w-10 place-items-center rounded-xl bg-orange-400 text-[#102b35] shadow-md shadow-orange-400/20 font-bold">
+                <Compass size={22} strokeWidth={2.4} />
+              </div>
+              <div>
+                <DialogTitle className="text-lg font-bold text-slate-950">
+                  NER-LogiAI Identity & RBAC Access
+                </DialogTitle>
+                <DialogDescription className="text-xs text-slate-500">
+                  Authenticate or register to unlock role-targeted corridors, tools and safety controls.
+                </DialogDescription>
+              </div>
             </div>
-            <div>
-              <DialogTitle className="text-lg font-bold text-slate-950">
-                NER-LogiAI Standalone Authentication
-              </DialogTitle>
-              <DialogDescription className="text-xs text-slate-500">
-                Select an operational persona or sign in to exercise Role-Based Access Control (RBAC).
-              </DialogDescription>
-            </div>
+            <Badge variant="outline" className="border-slate-300 text-slate-600 text-[10px] font-mono hidden sm:inline-block">
+              SIH26002
+            </Badge>
           </div>
         </DialogHeader>
 
+        {/* Current Active Session Banner */}
         {isAuthenticated && user && (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 p-3.5 flex items-center justify-between">
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50/90 p-3.5 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="grid h-8 w-8 place-items-center rounded-lg bg-emerald-600 text-white text-xs font-bold">
                 {user.name ? user.name.slice(0, 2).toUpperCase() : "OP"}
@@ -112,7 +201,7 @@ export function AuthDialog({ open = false, onOpenChange, onSuccess }: AuthDialog
               <div>
                 <div className="flex items-center gap-2">
                   <p className="text-xs font-bold text-emerald-950">{user.name}</p>
-                  <Badge className="bg-emerald-600 text-white text-[10px] px-1.5 py-0">Active</Badge>
+                  <Badge className="bg-emerald-600 text-white text-[10px] px-1.5 py-0 font-medium">Session Active</Badge>
                 </div>
                 <p className="text-[11px] text-emerald-800">
                   Role: <strong className="font-semibold">{user.operationalRole ?? user.role}</strong> · {user.email}
@@ -134,29 +223,71 @@ export function AuthDialog({ open = false, onOpenChange, onSuccess }: AuthDialog
           </div>
         )}
 
-        <div className="space-y-4 pt-1">
-          <div>
-            <div className="flex items-center justify-between mb-2">
+        {/* Tab Switcher */}
+        <div className="flex rounded-xl bg-slate-100 p-1 text-xs font-medium text-slate-600">
+          <button
+            type="button"
+            onClick={() => { setActiveTab("personas"); setError(null); }}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg transition-all ${
+              activeTab === "personas" ? "bg-white text-slate-950 font-bold shadow-xs" : "hover:text-slate-900"
+            }`}
+          >
+            <Sparkles size={13} className={activeTab === "personas" ? "text-amber-500" : "text-slate-400"} />
+            Quick Personas
+          </button>
+          <button
+            type="button"
+            onClick={() => { setActiveTab("login"); setError(null); }}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg transition-all ${
+              activeTab === "login" ? "bg-white text-slate-950 font-bold shadow-xs" : "hover:text-slate-900"
+            }`}
+          >
+            <LogIn size={13} className={activeTab === "login" ? "text-sky-500" : "text-slate-400"} />
+            Sign In
+          </button>
+          <button
+            type="button"
+            onClick={() => { setActiveTab("signup"); setError(null); }}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg transition-all ${
+              activeTab === "signup" ? "bg-white text-slate-950 font-bold shadow-xs" : "hover:text-slate-900"
+            }`}
+          >
+            <UserPlus size={13} className={activeTab === "signup" ? "text-orange-500" : "text-slate-400"} />
+            Create Account
+          </button>
+        </div>
+
+        {error && (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700 flex items-start gap-2">
+            <AlertCircle size={15} className="text-red-500 shrink-0 mt-0.5" />
+            <div className="flex-1">{error}</div>
+          </div>
+        )}
+
+        {/* Tab 1: Quick Personas */}
+        {activeTab === "personas" && (
+          <div className="space-y-3 pt-1">
+            <div className="flex items-center justify-between">
               <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                Quick Persona Sign-In
+                Evaluation & Demonstration Personas
               </p>
-              <span className="text-[10px] text-slate-400">One-click role activation</span>
+              <span className="text-[10px] text-slate-400 font-mono">1-click instant access</span>
             </div>
 
             <div className="grid gap-2.5 sm:grid-cols-2">
-              {personas.map((persona) => {
+              {personas.map((persona, index) => {
                 const Icon = roleIcons[persona.role] ?? ShieldCheck;
                 const isCurrent = user?.operationalRole === persona.role;
                 return (
                   <button
-                    key={persona.role}
+                    key={`${persona.role}-${index}`}
                     type="button"
                     disabled={submitting || loading}
-                    onClick={() => handleLogin(persona.role as OperationalRoleType, persona.name, persona.email)}
+                    onClick={() => handlePersonaLogin(persona.role as OperationalRoleType, persona.name, persona.email)}
                     className={`flex flex-col text-left p-3 rounded-xl border transition-all ${
                       isCurrent
                         ? "border-orange-500 bg-orange-50/50 shadow-sm ring-1 ring-orange-400"
-                        : "border-slate-200 bg-slate-50/60 hover:bg-slate-100/80 hover:border-slate-300"
+                        : "border-slate-200 bg-slate-50/60 hover:bg-slate-100 hover:border-slate-300"
                     }`}
                   >
                     <div className="flex items-center justify-between w-full">
@@ -181,65 +312,177 @@ export function AuthDialog({ open = false, onOpenChange, onSuccess }: AuthDialog
               })}
             </div>
           </div>
+        )}
 
-          <div className="border-t border-slate-200 pt-3">
-            <details className="group">
-              <summary className="text-xs font-semibold text-slate-700 cursor-pointer list-none flex items-center justify-between hover:text-slate-900">
-                <span>Custom User Login</span>
-                <span className="text-[11px] text-orange-600 font-medium group-open:hidden">+ Enter custom details</span>
-                <span className="text-[11px] text-slate-400 hidden group-open:inline">Hide</span>
-              </summary>
-              <form onSubmit={handleCustomSubmit} className="mt-3 space-y-3 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label htmlFor="custom-name" className="text-[11px]">Display Name</Label>
-                    <Input
-                      id="custom-name"
-                      placeholder="e.g. Officer Barua"
-                      value={customName}
-                      onChange={(e) => setCustomName(e.target.value)}
-                      className="h-8 text-xs bg-white mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="custom-email" className="text-[11px]">Email</Label>
-                    <Input
-                      id="custom-email"
-                      type="email"
-                      placeholder="user@ner-logiai.gov.in"
-                      value={customEmail}
-                      onChange={(e) => setCustomEmail(e.target.value)}
-                      className="h-8 text-xs bg-white mt-1"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <Label htmlFor="custom-role" className="text-[11px]">Assigned Role</Label>
-                  <select
-                    id="custom-role"
-                    value={selectedRole}
-                    onChange={(e) => setSelectedRole(e.target.value as OperationalRoleType)}
-                    className="w-full h-8 px-2 mt-1 rounded-md border border-slate-200 bg-white text-xs font-medium"
-                  >
-                    <option value="admin">Government / District Administrator (admin)</option>
-                    <option value="field_officer">Field Officer (field_officer)</option>
-                    <option value="truck_driver">Truck Driver (truck_driver)</option>
-                    <option value="logistics_manager">Logistics Manager (logistics_manager)</option>
-                    <option value="emergency_team">Emergency Response Team (emergency_team)</option>
-                    <option value="viewer">Public Viewer / Auditor (viewer)</option>
-                  </select>
-                </div>
-                <Button
-                  type="submit"
-                  disabled={submitting}
-                  size="sm"
-                  className="w-full bg-[#0d2530] text-white hover:bg-[#153743] text-xs h-8"
-                >
-                  Sign in with custom identity
-                </Button>
-              </form>
-            </details>
-          </div>
+        {/* Tab 2: Sign In (Credentials) */}
+        {activeTab === "login" && (
+          <form onSubmit={handleCredentialLogin} className="space-y-4 pt-1">
+            <div>
+              <Label htmlFor="login-email" className="text-xs font-semibold text-slate-700">Official Email</Label>
+              <Input
+                id="login-email"
+                type="email"
+                required
+                placeholder="user@ner-logiai.gov.in"
+                value={loginEmail}
+                onChange={(e) => setLoginEmail(e.target.value)}
+                className="mt-1 h-9 text-xs"
+              />
+            </div>
+            <div>
+              <Label htmlFor="login-password" className="text-xs font-semibold text-slate-700 flex items-center gap-1">
+                <Lock size={12} className="text-slate-400" />
+                <span>Password</span>
+              </Label>
+              <Input
+                id="login-password"
+                type="password"
+                required
+                placeholder="••••••••"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                className="mt-1 h-9 text-xs"
+              />
+            </div>
+            <Button
+              type="submit"
+              disabled={submitting}
+              className="w-full h-9 bg-[#0d2530] text-white hover:bg-[#153743] text-xs font-bold"
+            >
+              {submitting ? "Signing in..." : "Sign in with Credentials"}
+            </Button>
+            <div className="text-center text-xs text-slate-500 pt-1">
+              Need a new account?{" "}
+              <button
+                type="button"
+                onClick={() => { setActiveTab("signup"); setError(null); }}
+                className="text-orange-600 font-bold hover:underline"
+              >
+                Create an account
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Tab 3: Create Account (Sign Up) */}
+        {activeTab === "signup" && (
+          <form onSubmit={handleSignupSubmit} className="space-y-3.5 pt-1">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <Label htmlFor="signup-name" className="text-xs font-semibold text-slate-700">Full Name *</Label>
+                <Input
+                  id="signup-name"
+                  required
+                  placeholder="e.g. Officer Barua"
+                  value={signupName}
+                  onChange={(e) => setSignupName(e.target.value)}
+                  className="mt-1 h-8 text-xs"
+                />
+              </div>
+              <div>
+                <Label htmlFor="signup-email" className="text-xs font-semibold text-slate-700">Official Email *</Label>
+                <Input
+                  id="signup-email"
+                  type="email"
+                  required
+                  placeholder="user@ner-logiai.gov.in"
+                  value={signupEmail}
+                  onChange={(e) => setSignupEmail(e.target.value)}
+                  className="mt-1 h-8 text-xs"
+                />
+              </div>
+            </div>
+
+            <div>
+              <Label htmlFor="signup-role" className="text-xs font-semibold text-slate-700 flex items-center justify-between">
+                <span>DEMO ROLE ASSIGNMENT</span>
+                <span className="text-[10px] text-slate-400 font-normal">Controls RBAC Workspace</span>
+              </Label>
+              <select
+                id="signup-role"
+                value={signupRole}
+                onChange={(e) => setSignupRole(e.target.value as OperationalRoleType)}
+                className="w-full h-8 px-2 mt-1 rounded-md border border-slate-200 bg-white text-xs font-medium"
+              >
+                <option value="admin">Government / District Administrator (admin)</option>
+                <option value="field_officer">Field Officer (field_officer)</option>
+                <option value="truck_driver">Truck Driver (truck_driver)</option>
+                <option value="logistics_manager">Logistics Manager (logistics_manager)</option>
+                <option value="emergency_team">Emergency Response Team (emergency_team)</option>
+                <option value="viewer">Public Viewer / Auditor (viewer)</option>
+              </select>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <Label htmlFor="signup-password" className="text-xs font-semibold text-slate-700">Password (min. 6) *</Label>
+                <Input
+                  id="signup-password"
+                  type="password"
+                  required
+                  placeholder="••••••••"
+                  value={signupPassword}
+                  onChange={(e) => setSignupPassword(e.target.value)}
+                  className="mt-1 h-8 text-xs"
+                />
+              </div>
+              <div>
+                <Label htmlFor="signup-confirm" className="text-xs font-semibold text-slate-700">Confirm Password *</Label>
+                <Input
+                  id="signup-confirm"
+                  type="password"
+                  required
+                  placeholder="••••••••"
+                  value={signupConfirmPassword}
+                  onChange={(e) => setSignupConfirmPassword(e.target.value)}
+                  className="mt-1 h-8 text-xs"
+                />
+              </div>
+            </div>
+
+            <div>
+              <Label htmlFor="signup-org" className="text-xs font-semibold text-slate-700">Organization (Optional)</Label>
+              <Input
+                id="signup-org"
+                placeholder="e.g. State Disaster Management / Transport Dept"
+                value={signupOrganization}
+                onChange={(e) => setSignupOrganization(e.target.value)}
+                className="mt-1 h-8 text-xs"
+              />
+            </div>
+
+            <Button
+              type="submit"
+              disabled={submitting}
+              className="w-full h-9 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-slate-950 font-bold text-xs shadow-md"
+            >
+              {submitting ? "Creating Account..." : "Create Account & Sign In"}
+            </Button>
+            <div className="text-center text-xs text-slate-500 pt-1">
+              Already have an account?{" "}
+              <button
+                type="button"
+                onClick={() => { setActiveTab("login"); setError(null); }}
+                className="text-orange-600 font-bold hover:underline"
+              >
+                Sign in
+              </button>
+            </div>
+          </form>
+        )}
+
+        <div className="border-t border-slate-100 pt-3 flex items-center justify-between text-[11px] text-slate-400">
+          <span>Dedicated registration available:</span>
+          <button
+            type="button"
+            onClick={() => {
+              handleOpenChange(false);
+              setLocation("/signup");
+            }}
+            className="text-orange-600 font-medium hover:underline"
+          >
+            Open standalone signup page →
+          </button>
         </div>
       </DialogContent>
     </Dialog>

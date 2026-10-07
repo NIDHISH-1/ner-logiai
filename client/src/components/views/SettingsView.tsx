@@ -1,15 +1,43 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Settings, Database, CloudRain, Key, ShieldCheck, RefreshCw, CheckCircle2, RotateCcw } from "lucide-react";
+import { Settings, Database, CloudRain, Key, ShieldCheck, RefreshCw, CheckCircle2, RotateCcw, Globe, Wifi, WifiOff, BellRing, Clock } from "lucide-react";
 import { toast } from "sonner";
+import { useLanguage } from "@/contexts/LanguageContext";
+import { readOfflineQueue, pendingOfflineCount } from "@/lib/offlineIncidentQueue";
 
 export function SettingsView() {
   const trpcUtils = trpc.useUtils();
   const snapshotQuery = trpc.operations.snapshot.useQuery();
   const riskQuery = trpc.operations.risk.useQuery();
+  const { language, setLanguage, t } = useLanguage();
+
+  const [isOnline, setIsOnline] = useState(() => typeof navigator !== "undefined" ? navigator.onLine : true);
+  const [offlineQueueCount, setOfflineQueueCount] = useState(0);
+  const [lastSyncTime, setLastSyncTime] = useState<string>("Just now");
+  const [alertPresentation, setAlertPresentation] = useState<"actionable" | "detailed">("actionable");
+
+  useEffect(() => {
+    const checkStatus = () => {
+      setIsOnline(typeof navigator !== "undefined" ? navigator.onLine : true);
+      const queue = readOfflineQueue();
+      setOfflineQueueCount(pendingOfflineCount(queue));
+      const last = queue.filter(item => item.syncedAt).sort((a, b) => (b.syncedAt ?? "").localeCompare(a.syncedAt ?? ""))[0];
+      if (last?.syncedAt) {
+        const diffMin = Math.max(1, Math.round((Date.now() - new Date(last.syncedAt).getTime()) / 60000));
+        setLastSyncTime(`${diffMin} min ago`);
+      }
+    };
+    checkStatus();
+    window.addEventListener("online", checkStatus);
+    window.addEventListener("offline", checkStatus);
+    return () => {
+      window.removeEventListener("online", checkStatus);
+      window.removeEventListener("offline", checkStatus);
+    };
+  }, []);
 
   const isDbAvailable = snapshotQuery.data?.databaseAvailable ?? false;
   const weatherLabel = riskQuery.data?.weatherDataLabel ?? "SIMULATED WEATHER DATA";
@@ -37,8 +65,88 @@ export function SettingsView() {
         </div>
         <h2 className="mt-2 text-2xl font-bold tracking-tight text-slate-900">Prototype Settings & Diagnostics</h2>
         <p className="mt-1 text-xs text-slate-500">
-          Environment parameters, external data adapters, database connectivity, and seed status.
+          Operational language preferences, low-connectivity synchronization state, database persistence, and external adapters.
         </p>
+      </div>
+
+      {/* Phase 5 Core Settings: Language & Connectivity */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        {/* Language Preference Card */}
+        <Card className="border-slate-200 bg-white p-5 shadow-sm space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
+              <Globe size={16} className="text-teal-600" /> Operational Language
+            </div>
+            <Badge className="bg-teal-600 text-white border-0 text-[10px] font-mono">
+              {language === "en" ? "ENGLISH" : language === "hi" ? "HINDI (हिन्दी)" : "ASSAMESE (অসমীয়া)"}
+            </Badge>
+          </div>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            Select deterministic operational language. Translates incident advisories, road warnings, and driver instructions while preserving technical IDs, coordinates, and ETAs.
+          </p>
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={() => setLanguage("en")}
+              className={`flex-1 rounded-lg px-3 py-2 text-xs font-bold transition border ${
+                language === "en"
+                  ? "bg-[#12313b] text-white border-[#12313b] shadow-sm"
+                  : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+              }`}
+            >
+              English (EN)
+            </button>
+            <button
+              onClick={() => setLanguage("hi")}
+              className={`flex-1 rounded-lg px-3 py-2 text-xs font-bold transition border ${
+                language === "hi"
+                  ? "bg-[#12313b] text-white border-[#12313b] shadow-sm"
+                  : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+              }`}
+            >
+              हिन्दी / Hindi (HI)
+            </button>
+            <button
+              onClick={() => setLanguage("as")}
+              className={`flex-1 rounded-lg px-3 py-2 text-xs font-bold transition border ${
+                language === "as"
+                  ? "bg-[#12313b] text-white border-[#12313b] shadow-sm"
+                  : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+              }`}
+            >
+              অসমীয়া / Assamese (AS)
+            </button>
+          </div>
+          <div className="rounded-lg bg-slate-50 p-2 text-[11px] text-slate-500 font-mono">
+            Active: {language === "en" ? "Standard Operational English" : language === "hi" ? "Deterministic Hindi Translation" : "Deterministic Assamese Translation"}
+          </div>
+        </Card>
+
+        {/* Connectivity & Offline Sync Status */}
+        <Card className="border-slate-200 bg-white p-5 shadow-sm space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
+              {isOnline ? <Wifi size={16} className="text-emerald-600" /> : <WifiOff size={16} className="text-orange-600" />} Field Connectivity & Sync
+            </div>
+            {isOnline ? (
+              <Badge className="bg-emerald-600 text-white border-0 text-[10px]">ONLINE</Badge>
+            ) : (
+              <Badge className="bg-orange-600 text-white border-0 text-[10px]">OFFLINE</Badge>
+            )}
+          </div>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            Monitors connection state and pending local incident queue actions. Previously synchronized alerts remain readable offline.
+          </p>
+          <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
+            <div className="rounded-lg bg-slate-50 p-2 text-slate-700">
+              <span className="text-slate-400 block text-[9px] uppercase">Last Sync</span>
+              <strong>{lastSyncTime}</strong>
+            </div>
+            <div className="rounded-lg bg-slate-50 p-2 text-slate-700">
+              <span className="text-slate-400 block text-[9px] uppercase">Queue State</span>
+              <strong>{offlineQueueCount} pending</strong>
+            </div>
+          </div>
+        </Card>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { RoleWorkspace } from "@/components/RoleWorkspace";
@@ -16,6 +17,7 @@ import {
   AlertTriangle, ArrowUpRight, Bell, Boxes, CheckCircle2, ChevronDown, CircleDot, CloudRain,
   Compass, FileWarning, Gauge, Layers3, LocateFixed, LogOut, MapPin, Menu, Navigation,
   PackageCheck, Radio, RefreshCw, Route, ShieldCheck, Truck, UserCircle2, WifiOff, X,
+  LogIn, UserPlus, ChevronLeft, ChevronRight,
 } from "lucide-react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -27,6 +29,7 @@ import { CorridorsView } from "@/components/views/CorridorsView";
 import { WeatherView } from "@/components/views/WeatherView";
 import { AnalyticsView } from "@/components/views/AnalyticsView";
 import { SettingsView } from "@/components/views/SettingsView";
+import Login from "./Login";
 
 const navItems = [
   { label: "Dashboard", icon: Gauge },
@@ -50,34 +53,68 @@ type RouteNodeId = "GUWAHATI" | "JORHAT" | "KOHIMA" | "SHILLONG" | "IMPHAL" | "R
 
 function LeafletMap() {
   const [routeSelection, setRouteSelection] = useState<{ origin: RouteNodeId; destination: RouteNodeId }>({ origin: "GUWAHATI", destination: "IMPHAL" });
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const layerGroupRef = useRef<L.LayerGroup | null>(null);
+
   const incidentsQuery = trpc.demo.incidents.useQuery();
   const riskQuery = trpc.demo.risk.useQuery();
   const routeQuery = trpc.demo.routes.useQuery(routeSelection);
   useEffect(() => { const handler = (event: Event) => { const detail = (event as CustomEvent<{ origin: RouteNodeId; destination: RouteNodeId }>).detail; if (detail?.origin && detail?.destination) setRouteSelection(prev => (prev.origin === detail.origin && prev.destination === detail.destination ? prev : { origin: detail.origin, destination: detail.destination })); }; window.addEventListener("ner-route-selection", handler); return () => window.removeEventListener("ner-route-selection", handler); }, []);
   const persistedMarkers = useMemo(() => (incidentsQuery.data ?? []).map(incident => ({ label: `${incident.id} · ${incident.type}`, point: [Number(incident.latitude), Number(incident.longitude)] as [number, number], color: incident.severity === "CRITICAL" ? "#ef4444" : incident.severity === "HIGH" ? "#f97316" : "#eab308", type: incident.roadAccessibility === "blocked" ? "incident" : "risk", popup: `<strong>${incident.id} · ${incident.type}</strong><br/><span>Severity: ${incident.severity}<br/>Location: ${incident.latitude}, ${incident.longitude}<br/>Reporter: ${incident.reporterRole}<br/>Timestamp: ${new Date(incident.occurredAt).toLocaleString()}<br/>Status: ${incident.status}<br/>Last updated: ${new Date(incident.updatedAt).toLocaleString()}</span>` })), [incidentsQuery.data]);
   const riskMarkers = useMemo(() => (riskQuery.data?.predictions ?? []).map((item, index) => ({ label: item.label, point: [[26.75, 94.2], [25.6747, 94.1086], [25.5788, 91.8933]][index] as [number, number], color: item.prediction.riskLevel === "CRITICAL" ? "#dc2626" : item.prediction.riskLevel === "HIGH" ? "#f97316" : item.prediction.riskLevel === "MEDIUM" ? "#eab308" : "#16a34a", type: "risk", popup: `<strong>${item.prediction.riskLevel} risk · ${item.label}</strong><br/><span>Probability: ${item.prediction.probability}%<br/>Confidence: ${item.prediction.confidence}%<br/>Freshness: ${item.prediction.freshness}<br/>Factors: ${item.prediction.contributingFactors.join(" · ")}<br/><em>AI prediction — requires route safety validation.</em></span>` })), [riskQuery.data]);
+
   useEffect(() => {
-    const map = L.map("ner-map", { zoomControl: false, attributionControl: true }).setView([25.8, 92.7], 6);
+    if (!mapContainerRef.current) return;
+    if ((mapContainerRef.current as any)._leaflet_id) {
+      delete (mapContainerRef.current as any)._leaflet_id;
+    }
+    const map = L.map(mapContainerRef.current, {
+      zoomControl: false,
+      attributionControl: true,
+      fadeAnimation: false,
+      zoomAnimation: false,
+    }).setView([25.8, 92.7], 6);
     L.control.zoom({ position: "bottomright" }).addTo(map);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18, attribution: "© OpenStreetMap contributors" }).addTo(map);
 
-    const route = L.polyline([[26.1445, 91.7362], [26.75, 94.2], [25.6747, 94.1086]], { color: "#fb923c", weight: 5, opacity: 0.9, dashArray: "8 8" }).addTo(map);
+    const layerGroup = L.layerGroup().addTo(map);
+    mapRef.current = map;
+    layerGroupRef.current = layerGroup;
+
+    return () => {
+      if (mapRef.current) {
+        try {
+          mapRef.current.remove();
+        } catch {}
+        mapRef.current = null;
+        layerGroupRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const layerGroup = layerGroupRef.current;
+    if (!layerGroup) return;
+    layerGroup.clearLayers();
+
+    const route = L.polyline([[26.1445, 91.7362], [26.75, 94.2], [25.6747, 94.1086]], { color: "#fb923c", weight: 5, opacity: 0.9, dashArray: "8 8" }).addTo(layerGroup);
     route.bindTooltip("Recommended corridor · safety-validated demo route");
     const routePoints: Record<string, [number, number]> = { GUWAHATI: [26.1445, 91.7362], JORHAT: [26.75, 94.2], KOHIMA: [25.6747, 94.1086], SHILLONG: [25.5788, 91.8933], IMPHAL: [24.817, 93.9368] };
     const selectedRoute = routeQuery.data?.recommendation.route.map(node => routePoints[node]).filter(Boolean) as [number, number][] | undefined;
-    if (selectedRoute && selectedRoute.length > 1) L.polyline(selectedRoute, { color: "#16a34a", weight: 6, opacity: 0.9 }).addTo(map).bindTooltip("Recommended route · safety-aware A* prototype");
-    L.polyline([[26.1445, 91.7362], [25.5788, 91.8933], [25.6747, 94.1086]], { color: "#64748b", weight: 3, opacity: 0.75, dashArray: "3 8" }).addTo(map).bindTooltip("Alternate route · monitoring");
+    if (selectedRoute && selectedRoute.length > 1) L.polyline(selectedRoute, { color: "#16a34a", weight: 6, opacity: 0.9 }).addTo(layerGroup).bindTooltip("Recommended route · safety-aware A* prototype");
+    L.polyline([[26.1445, 91.7362], [25.5788, 91.8933], [25.6747, 94.1086]], { color: "#64748b", weight: 3, opacity: 0.75, dashArray: "3 8" }).addTo(layerGroup).bindTooltip("Alternate route · monitoring");
 
     const visibleMarkers = [...mapMarkers.filter(marker => marker.type === "vehicle"), ...persistedMarkers, ...riskMarkers];
     visibleMarkers.forEach((marker) => {
       const icon = L.divIcon({ className: "custom-pin", html: `<span style="--pin:${marker.color}" class="map-pin ${marker.type}"></span>`, iconSize: [22, 22], iconAnchor: [11, 11] });
-      L.marker(marker.point, { icon }).addTo(map).bindPopup(marker.popup ?? `<strong>${marker.label}</strong><br/><span>Simulated demo layer · last sync 7 min ago</span>`);
+      L.marker(marker.point, { icon }).addTo(layerGroup).bindPopup(marker.popup ?? `<strong>${marker.label}</strong><br/><span>Simulated demo layer · last sync 7 min ago</span>`);
     });
-    const riskZone = L.circle([25.58, 91.89], { radius: 36000, color: "#eab308", fillColor: "#eab308", fillOpacity: 0.12, weight: 1 }).addTo(map);
+    const riskZone = L.circle([25.58, 91.89], { radius: 36000, color: "#eab308", fillColor: "#eab308", fillOpacity: 0.12, weight: 1 }).addTo(layerGroup);
     riskZone.bindTooltip("Moderate risk zone · rainfall exposure");
-    return () => { map.remove(); };
   }, [persistedMarkers, riskMarkers, routeQuery.data]);
-  return <div id="ner-map" className="h-full min-h-[430px] w-full" aria-label="Interactive simulated map of Northeast India" />;
+
+  return <div ref={mapContainerRef} className="h-full min-h-[430px] w-full" aria-label="Interactive simulated map of Northeast India" />;
 }
 
 function MetricCard({ label, value, delta, icon: Icon, tone }: { label: string; value: number; delta: string; icon: typeof Gauge; tone: string }) {
@@ -90,21 +127,76 @@ function MetricCard({ label, value, delta, icon: Icon, tone }: { label: string; 
 }
 
 export default function Home() {
-  const { user, isAuthenticated, login, logout } = useAuth();
+  const [, setLocation] = useLocation();
+  const { user, isAuthenticated, login, logout, switchRole } = useAuth();
   const [authOpen, setAuthOpen] = useState(false);
-  const { data, isLoading, refetch } = trpc.demo.snapshot.useQuery();
+
+  const resolveRole = (rawRole?: string): Role => {
+    if (!rawRole) return "Government / District Administrator";
+    const r = rawRole.toLowerCase().trim();
+    if (r === "admin" || r === "government_admin") return "Government / District Administrator";
+    if (r === "truck_driver") return "Truck Driver";
+    if (r === "field_officer") return "Field Officer";
+    if (r === "logistics_manager") return "Logistics Manager";
+    if (r === "emergency_team" || r === "emergency_response_team") return "Emergency Response Team";
+    if (r === "viewer") return "Government / District Administrator";
+    return "Government / District Administrator";
+  };
+
+  const [role, setRole] = useState<Role>(() => {
+    const active = user?.operationalRole;
+    return resolveRole(active);
+  });
+
+  const { data, isLoading, refetch } = trpc.demo.snapshot.useQuery(undefined, {
+    enabled: isAuthenticated,
+  });
   const seedMutation = trpc.demo.ensureSeeded.useMutation();
   const trpcUtils = trpc.useUtils();
-  const accessQuery = trpc.access.current.useQuery(undefined, { enabled: isAuthenticated, retry: false, refetchOnWindowFocus: false });
-  const [role, setRole] = useState<Role>("Government / District Administrator");
+  const accessQuery = trpc.access.current.useQuery(undefined, {
+    enabled: isAuthenticated,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
+  const fallbackSnapshot = useMemo(() => ({
+    metrics: {
+      activeVehicles: 18,
+      activeDeliveries: 42,
+      highRiskCorridors: 3,
+      openIncidents: 4,
+      delayedShipments: 2,
+      blockedRoads: 1,
+      criticalIncidents: 2,
+      criticalShipments: 5,
+      affectedVehicles: 3,
+      emergencyCorridors: 2,
+    },
+    vehicles: [
+      { id: "TRK-104", shipment: "Emergency Medical Supplies", position: "NH-29 near Dimapur", status: "In Transit", eta: "14:30", risk: "LOW" },
+      { id: "TRK-208", shipment: "Infant Nutrition Kits", position: "NH-37 Jorhat bypass", status: "Delayed (Mudslide)", eta: "16:45", risk: "HIGH" },
+      { id: "TRK-315", shipment: "Water Purification Units", position: "GS Road Shillong", status: "En Route", eta: "13:15", risk: "MODERATE" },
+    ],
+    incidents: [
+      { id: "INC-901", type: "Landslide Blockage", location: "NH-29 Km 42 (Kohima-Dimapur)", severity: "Critical", age: "18m ago", status: "Active Clearance" },
+      { id: "INC-902", type: "Bridge Waterlogging", location: "NH-37 near Kaziranga", severity: "High", age: "42m ago", status: "Diversion Active" },
+    ],
+    generatedAt: new Date().toISOString(),
+  }), []);
+
   const [activeNav, setActiveNav] = useState("Dashboard");
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const [offline, setOffline] = useState(false);
   const [roleOpen, setRoleOpen] = useState(false);
-  const snapshot = data;
-  const lastSync = useMemo(() => new Date(snapshot?.generatedAt ?? Date.now()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), [snapshot?.generatedAt]);
+  const snapshot = data ?? fallbackSnapshot;
+  const lastSync = useMemo(
+    () => new Date(snapshot?.generatedAt ?? Date.now()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    [snapshot?.generatedAt]
+  );
+
   useEffect(() => {
-    if (!sessionStorage.getItem("ner-logiai.demo-seeded")) {
+    if (isAuthenticated && !sessionStorage.getItem("ner-logiai.demo-seeded")) {
       seedMutation.mutate(undefined, {
         onSuccess: async () => {
           sessionStorage.setItem("ner-logiai.demo-seeded", "1");
@@ -113,20 +205,35 @@ export default function Home() {
         onError: () => toast.error("Demo data could not be seeded; showing fallback snapshot"),
       });
     }
-  }, []);
+  }, [isAuthenticated]);
+
   useEffect(() => {
-    const roleLabels: Record<string, Role> = { admin: "Government / District Administrator", field_officer: "Field Officer", truck_driver: "Truck Driver", logistics_manager: "Logistics Manager", emergency_team: "Emergency Response Team", viewer: "Government / District Administrator" };
-    const authenticatedRole = accessQuery.data?.operationalRole;
-    if (authenticatedRole && roleLabels[authenticatedRole]) {
-      const nextRole = roleLabels[authenticatedRole];
-      setRole(current => (current !== nextRole ? nextRole : current));
+    const authenticatedRole = user?.operationalRole || accessQuery.data?.operationalRole;
+    if (authenticatedRole) {
+      const nextRole = resolveRole(authenticatedRole);
+      setRole((current) => (current !== nextRole ? nextRole : current));
     }
-  }, [accessQuery.data?.operationalRole]);
+  }, [user?.operationalRole, accessQuery.data?.operationalRole]);
+
+  const handleRoleChange = async (item: Role) => {
+    setRole(item);
+    setRoleOpen(false);
+    const key = roleKeyByLabel[item] as any;
+    if (key) {
+      await switchRole(key);
+    }
+    toast(`Activated persona: ${item}`);
+  };
 
   const [validationLogicOpen, setValidationLogicOpen] = useState(false);
 
-  if (role !== "Government / District Administrator" && snapshot) {
-    return <RoleWorkspace role={role} snapshot={snapshot} onRoleChange={setRole} />;
+  // Unauthenticated users cannot see role dashboards
+  if (!isAuthenticated) {
+    return <Login />;
+  }
+
+  if (role !== "Government / District Administrator") {
+    return <RoleWorkspace role={role} snapshot={snapshot} onRoleChange={handleRoleChange} />;
   }
 
   const chooseNav = (label: string) => {
@@ -139,35 +246,100 @@ export default function Home() {
   };
 
   return <div className="min-h-screen bg-[#f4f7f9] text-slate-900">
-    <aside className={cn("fixed inset-y-0 left-0 z-40 w-[250px] border-r border-slate-200/80 bg-[#0d2530] px-4 py-5 text-slate-300 transition-transform duration-200 lg:translate-x-0", mobileOpen ? "translate-x-0" : "-translate-x-full")}>
-      <div className="flex items-center justify-between px-2"><div className="flex items-center gap-3"><div className="grid h-9 w-9 place-items-center rounded-xl bg-orange-400 text-[#102b35] shadow-lg shadow-orange-400/20"><Compass size={20} strokeWidth={2.3} /></div><div><p className="text-[15px] font-bold tracking-tight text-white">NER-LogiAI</p><p className="text-[9px] font-bold uppercase tracking-[0.18em] text-teal-300">Operations intelligence</p></div></div><button className="lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close menu"><X size={18} /></button></div>
-      <div className="mt-8 rounded-2xl border border-white/10 bg-white/5 p-3"><p className="text-[10px] font-bold uppercase tracking-[0.15em] text-teal-300">Current region</p><div className="mt-2 flex items-center justify-between"><span className="text-sm font-medium text-white">Northeast India</span><span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_0_4px_rgba(52,211,153,0.12)]" /></div><p className="mt-1 text-[11px] text-slate-400">8 states · 68 corridors</p></div>
-      <nav className="mt-7 space-y-1">
-        {navItems.map(({ label, icon: Icon }) => (
-          <button
-            key={label}
-            onClick={() => chooseNav(label)}
-            className={cn(
-              "group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[13px] font-medium transition-colors",
-              activeNav === label
-                ? "bg-orange-400 text-[#102b35] shadow-lg shadow-orange-400/10 font-bold"
-                : "text-slate-400 hover:bg-white/8 hover:text-white"
+    <aside className={cn(
+      "fixed inset-y-0 left-0 z-40 border-r border-slate-200/80 bg-[#0d2530] px-3 py-5 text-slate-300 transition-all duration-200 lg:translate-x-0 flex flex-col justify-between",
+      collapsed ? "w-[72px]" : "w-[250px]",
+      mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+    )}>
+      <div className="overflow-y-auto overflow-x-hidden">
+        <div className={cn("flex items-center justify-between px-1", collapsed && "flex-col gap-3 items-center")}>
+          <div className="flex items-center gap-3 overflow-hidden">
+            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-orange-400 text-[#102b35] shadow-lg shadow-orange-400/20 font-bold">
+              <Compass size={20} strokeWidth={2.3} />
+            </div>
+            {!collapsed && (
+              <div className="truncate">
+                <p className="text-[15px] font-bold tracking-tight text-white">NER-LogiAI</p>
+                <p className="text-[9px] font-bold uppercase tracking-[0.18em] text-teal-300 truncate">Operations intelligence</p>
+              </div>
             )}
-          >
-            <Icon size={17} strokeWidth={activeNav === label ? 2.2 : 1.8} />
-            <span>{label}</span>
-            {["Alerts", "Incidents"].includes(label) && (
-              <span className="ml-auto rounded-full bg-red-400/15 px-2 py-0.5 text-[10px] font-bold text-red-300">
-                {label === "Alerts" ? 4 : snapshot?.incidents?.length ?? 7}
-              </span>
-            )}
-          </button>
-        ))}
-      </nav>
-      <div className="absolute bottom-5 left-4 right-4"><div className="rounded-2xl border border-white/10 bg-[#153743] p-3"><div className="flex items-center gap-2"><WifiOff size={15} className="text-orange-300" /><span className="text-[11px] font-semibold text-orange-200">Demo environment</span></div><p className="mt-2 text-[11px] leading-relaxed text-slate-400">All map, vehicle and incident data is simulated for demonstration.</p></div></div>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              className="hidden lg:flex p-1.5 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white cursor-pointer transition"
+              onClick={() => setCollapsed(!collapsed)}
+              title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+            </button>
+            <button
+              className="lg:hidden p-1 hover:bg-white/10 rounded-lg text-slate-400 cursor-pointer"
+              onClick={() => setMobileOpen(false)}
+              aria-label="Close menu"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        {!collapsed && (
+          <div className="mt-8 rounded-2xl border border-white/10 bg-white/5 p-3">
+            <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-teal-300">Current region</p>
+            <div className="mt-2 flex items-center justify-between">
+              <span className="text-sm font-medium text-white">Northeast India</span>
+              <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_0_4px_rgba(52,211,153,0.12)]" />
+            </div>
+            <p className="mt-1 text-[11px] text-slate-400">8 states · 68 corridors</p>
+          </div>
+        )}
+
+        <nav className={cn("mt-7 space-y-1", collapsed && "space-y-1.5")}>
+          {navItems.map(({ label, icon: Icon }) => {
+            const isActive = activeNav === label;
+            return (
+              <button
+                key={label}
+                onClick={() => chooseNav(label)}
+                title={collapsed ? label : undefined}
+                className={cn(
+                  "group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[13px] font-medium transition-colors cursor-pointer",
+                  collapsed && "justify-center px-0",
+                  isActive
+                    ? "bg-orange-400 text-[#102b35] shadow-lg shadow-orange-400/10 font-bold"
+                    : "text-slate-400 hover:bg-white/8 hover:text-white"
+                )}
+              >
+                <Icon size={17} strokeWidth={isActive ? 2.2 : 1.8} className={cn("shrink-0", isActive ? "text-[#102b35]" : "text-slate-400")} />
+                {!collapsed && <span className="truncate">{label}</span>}
+                {!collapsed && ["Alerts", "Incidents"].includes(label) && (
+                  <span className="ml-auto rounded-full bg-red-400/15 px-2 py-0.5 text-[10px] font-bold text-red-300">
+                    {label === "Alerts" ? 4 : snapshot?.incidents?.length ?? 7}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+      </div>
+
+      <div className="pt-4 border-t border-white/10 space-y-2">
+        {!collapsed ? (
+          <div className="rounded-2xl border border-white/10 bg-[#153743] p-3 text-xs">
+            <div className="flex items-center gap-2">
+              <WifiOff size={15} className="text-orange-300 shrink-0" />
+              <span className="text-[11px] font-semibold text-orange-200">Demo environment</span>
+            </div>
+            <p className="mt-2 text-[11px] leading-relaxed text-slate-400">All map, vehicle and incident data is simulated for demonstration.</p>
+          </div>
+        ) : (
+          <div className="flex justify-center p-2" title="Demo environment - simulated data">
+            <WifiOff size={18} className="text-orange-300" />
+          </div>
+        )}
+      </div>
     </aside>
 
-    <main className="lg:pl-[250px]"><header className="sticky top-0 z-30 flex h-[72px] items-center justify-between border-b border-slate-200/80 bg-[#f4f7f9]/90 px-4 backdrop-blur-md sm:px-7"><div className="flex items-center gap-3"><button className="rounded-lg p-2 hover:bg-white lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Open menu"><Menu size={20} /></button><div><p className="text-[11px] font-bold uppercase tracking-[0.18em] text-orange-600">Regional command center</p><h1 className="mt-1 text-xl font-semibold tracking-tight text-slate-950">{activeNav}</h1></div></div><div className="flex items-center gap-2 sm:gap-4"><button onClick={toggleOffline} className={cn("hidden items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold sm:flex", offline ? "border-orange-200 bg-orange-50 text-orange-700" : "border-slate-200 bg-white text-slate-600")}><span className={cn("h-2 w-2 rounded-full", offline ? "bg-orange-400" : "bg-emerald-400")} />{offline ? "Offline mode" : "Connected"}</button><button onClick={() => chooseNav("Alerts")} className="relative rounded-xl border border-slate-200 bg-white p-2.5 text-slate-600 shadow-sm hover:bg-slate-50"><Bell size={17} /><span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-red-500 px-1 text-[9px] font-bold text-white">4</span></button><div className="relative"><button onClick={() => setRoleOpen((v) => !v)} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-2 py-1.5 shadow-sm hover:border-slate-300"><div className="grid h-8 w-8 place-items-center rounded-lg bg-[#d7ebe6] text-xs font-bold text-[#0d4b4c]">{user?.name ? user.name.slice(0, 2).toUpperCase() : "AG"}</div><div className="hidden text-left sm:block"><p className="text-[11px] font-bold text-slate-800">{user?.name ?? "Aditi Sharma"}</p><p className="text-[10px] text-slate-500">{role}</p></div><ChevronDown size={14} className="text-slate-400" /></button>{roleOpen && <div className="absolute right-0 top-12 z-50 w-64 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl"><div className="px-3 py-1.5 border-b border-slate-100 mb-1"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Switch RBAC Persona</p></div>{roles.map((item) => <button key={item} onClick={async () => { setRole(item); setRoleOpen(false); const key = roleKeyByLabel[item] as any; if (key) { await login({ role: key }); } toast(`Activated persona: ${item}`); }} className={cn("w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-slate-50 flex items-center justify-between", role === item ? "bg-orange-50 font-bold text-orange-700" : "text-slate-600")}><span>{item}</span>{role === item && <CheckCircle2 size={13} className="text-orange-600" />}</button>)}<div className="mt-1 pt-1 border-t border-slate-100 flex flex-col gap-1"><button onClick={() => { setRoleOpen(false); setAuthOpen(true); }} className="w-full text-left px-3 py-1.5 text-xs text-orange-600 font-medium hover:bg-orange-50 rounded-lg flex items-center gap-1.5"><UserCircle2 size={13} /> Persona details & accounts...</button>{isAuthenticated && <button onClick={async () => { setRoleOpen(false); await logout(); toast.info("Signed out"); }} className="w-full text-left px-3 py-1.5 text-xs text-red-600 font-medium hover:bg-red-50 rounded-lg flex items-center gap-1.5"><LogOut size={13} /> Sign out</button>}</div></div>}</div></div></header>
+    <main className={cn("transition-all duration-200", collapsed ? "lg:pl-[72px]" : "lg:pl-[250px]")}><header className="sticky top-0 z-30 flex h-[72px] items-center justify-between border-b border-slate-200/80 bg-[#f4f7f9]/90 px-4 backdrop-blur-md sm:px-7"><div className="flex items-center gap-3"><button className="rounded-lg p-2 hover:bg-white lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Open menu"><Menu size={20} /></button><div><p className="text-[11px] font-bold uppercase tracking-[0.18em] text-orange-600">Regional command center</p><h1 className="mt-1 text-xl font-semibold tracking-tight text-slate-950">{activeNav}</h1></div></div><div className="flex items-center gap-2 sm:gap-3"><button onClick={toggleOffline} className={cn("hidden items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold sm:flex", offline ? "border-orange-200 bg-orange-50 text-orange-700" : "border-slate-200 bg-white text-slate-600")}><span className={cn("h-2 w-2 rounded-full", offline ? "bg-orange-400" : "bg-emerald-400")} />{offline ? "Offline mode" : "Connected"}</button><button onClick={() => chooseNav("Alerts")} className="relative rounded-xl border border-slate-200 bg-white p-2.5 text-slate-600 shadow-sm hover:bg-slate-50"><Bell size={17} /><span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-red-500 px-1 text-[9px] font-bold text-white">4</span></button>{!isAuthenticated ? (<div className="flex items-center gap-1.5"><Button variant="outline" size="sm" onClick={() => setLocation("/login")} className="text-xs h-9 border-slate-300 hidden sm:inline-flex"><LogIn size={13} className="mr-1.5" /> Sign In</Button><Button size="sm" onClick={() => setLocation("/signup")} className="text-xs h-9 bg-orange-500 hover:bg-orange-600 text-white font-semibold hidden sm:inline-flex"><UserPlus size={13} className="mr-1.5" /> Sign Up</Button></div>) : null}<div className="relative"><button onClick={() => setRoleOpen((v) => !v)} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-2 py-1.5 shadow-sm hover:border-slate-300"><div className="grid h-8 w-8 place-items-center rounded-lg bg-[#d7ebe6] text-xs font-bold text-[#0d4b4c]">{user?.name ? user.name.slice(0, 2).toUpperCase() : "AG"}</div><div className="hidden text-left sm:block"><p className="text-[11px] font-bold text-slate-800">{user?.name ?? "Aditi Sharma"}</p><p className="text-[10px] text-slate-500">{role}</p></div><ChevronDown size={14} className="text-slate-400" /></button>{roleOpen && <div className="absolute right-0 top-12 z-50 w-64 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl"><div className="px-3 py-1.5 border-b border-slate-100 mb-1"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Switch RBAC Persona</p></div>{roles.map((item) => <button key={item} onClick={() => handleRoleChange(item)} className={cn("w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-slate-50 flex items-center justify-between cursor-pointer", role === item ? "bg-orange-50 font-bold text-orange-700" : "text-slate-600")}><span>{item}</span>{role === item && <CheckCircle2 size={13} className="text-orange-600" />}</button>)}<div className="mt-1 pt-1 border-t border-slate-100 flex flex-col gap-1"><button onClick={() => { setRoleOpen(false); setAuthOpen(true); }} className="w-full text-left px-3 py-1.5 text-xs text-orange-600 font-medium hover:bg-orange-50 rounded-lg flex items-center gap-1.5"><UserCircle2 size={13} /> Persona details & accounts...</button>{isAuthenticated && <button onClick={async () => { setRoleOpen(false); await logout(); toast.info("Signed out"); }} className="w-full text-left px-3 py-1.5 text-xs text-red-600 font-medium hover:bg-red-50 rounded-lg flex items-center gap-1.5"><LogOut size={13} /> Sign out</button>}</div></div>}</div></div></header>
 
       <div className="mx-auto max-w-[1500px] px-4 py-6 sm:px-7 lg:py-8">
         {activeNav === "Dashboard" && (

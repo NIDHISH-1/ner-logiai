@@ -31,7 +31,7 @@ export function CorridorsView({ onSelectRoute }: { onSelectRoute?: (corridorId: 
           </div>
           <h2 className="mt-2 text-2xl font-bold tracking-tight text-slate-900">Regional Highway Corridor Matrix</h2>
           <p className="mt-1 text-xs text-slate-500">
-            Real-time accessibility status, safety engine validations, and ML risk scores for critical supply corridors.
+            Operational accessibility status, safety engine validations, and deterministic risk scores for critical supply corridors.
           </p>
         </div>
       </div>

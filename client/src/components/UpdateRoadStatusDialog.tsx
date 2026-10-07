@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { MapPin, Route, ShieldAlert, CheckCircle2 } from "lucide-react";
+import { MapPin, Route, ShieldAlert, CheckCircle2, CloudOff } from "lucide-react";
+import { generateStableActionId, saveOfflineAction } from "@/lib/offlineStore";
 
 const CORRIDOR_PRESETS = [
   { name: "NH-37 · Jorhat Bypass Segment", lat: 26.7500, lon: 94.2000 },
@@ -28,6 +29,18 @@ export function UpdateRoadStatusDialog({
   const [latitude, setLatitude] = useState(String(CORRIDOR_PRESETS[0].lat));
   const [longitude, setLongitude] = useState(String(CORRIDOR_PRESETS[0].lon));
   const [gpsDetecting, setGpsDetecting] = useState(false);
+  const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
+
+  useEffect(() => {
+    const handleOnline = () => setOnline(true);
+    const handleOffline = () => setOnline(false);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
 
   const trpcUtils = trpc.useUtils();
 
@@ -90,6 +103,29 @@ export function UpdateRoadStatusDialog({
       return;
     }
 
+    if (!online) {
+      const actionId = generateStableActionId("ROAD_STATUS_UPDATE", `${selectedCorridor}-${accessibility}-${Date.now()}`);
+      saveOfflineAction({
+        actionId,
+        actionType: "ROAD_STATUS_UPDATE",
+        createdAt: new Date().toISOString(),
+        payload: {
+          corridor: selectedCorridor,
+          roadAccessibility: accessibility,
+          severity,
+          description: description.trim(),
+          latitude: lat,
+          longitude: lon,
+          reportedAt: new Date().toISOString(),
+        },
+        status: "PENDING",
+        retryCount: 0,
+      });
+      toast.info("Road accessibility update saved locally. Queued as PENDING SYNC.");
+      onOpenChange(false);
+      return;
+    }
+
     mutation.mutate({
       corridor: selectedCorridor,
       roadAccessibility: accessibility,
@@ -109,6 +145,11 @@ export function UpdateRoadStatusDialog({
             <Badge variant="outline" className="text-[11px] border-slate-200 text-slate-600">
               FIELD OFFICER
             </Badge>
+            {!online && (
+              <Badge variant="outline" className="border-amber-400 bg-amber-50 text-amber-900 text-[10px] font-bold flex items-center gap-1">
+                <CloudOff size={11} /> OFFLINE MODE · PENDING SYNC
+              </Badge>
+            )}
           </div>
           <DialogTitle className="text-xl font-bold text-slate-900 mt-2 flex items-center gap-2">
             <Route className="text-emerald-600" size={20} />
@@ -242,7 +283,7 @@ export function UpdateRoadStatusDialog({
               className="gap-2 bg-emerald-600 text-white hover:bg-emerald-700 text-xs"
             >
               <CheckCircle2 size={14} />
-              {mutation.isPending ? "Broadcasting..." : "Publish Road Status"}
+              {mutation.isPending ? "Broadcasting..." : !online ? "Queue Locally (Pending Sync)" : "Publish Road Status"}
             </Button>
           </div>
         </form>

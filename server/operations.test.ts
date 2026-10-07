@@ -43,6 +43,23 @@ describe("Operations Router", () => {
 
     const updatedAlerts = await caller.operations.alerts();
     expect(updatedAlerts.some((a) => a.id === newAlert.id)).toBe(true);
+
+    // Verify broadcasted alert reaches truck driver alert section
+    const truckDriverContext: TrpcContext = {
+      user: {
+        id: 2,
+        openId: "usr_driver",
+        name: "Driver Rajesh",
+        role: "user",
+        operationalRole: "truck_driver",
+        createdAt: new Date(),
+      },
+      req: {} as any,
+      res: {} as any,
+    };
+    const truckDriverCaller = appRouter.createCaller(truckDriverContext);
+    const driverAlerts = await truckDriverCaller.operations.alerts();
+    expect(driverAlerts.some((a) => a.id === newAlert.id)).toBe(true);
   });
 
   it("creates and dispatches a shipment through operations router", async () => {

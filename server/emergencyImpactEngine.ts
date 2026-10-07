@@ -247,7 +247,7 @@ export function buildAlertDraftsFromImpact(
       roadSegment: impact.roadSegment,
       affectedVehicleIds: vehicleIds,
       affectedShipmentIds: shipmentIds,
-      targetRoles: ["admin", "emergency_team", "logistics_manager", "field_officer"],
+      targetRoles: ["admin", "emergency_team", "logistics_manager", "field_officer", "truck_driver"],
     });
   }
 
@@ -263,7 +263,7 @@ export function buildAlertDraftsFromImpact(
       roadSegment: impact.roadSegment,
       affectedVehicleIds: vehicleIds,
       affectedShipmentIds: shipmentIds,
-      targetRoles: ["admin", "emergency_team"],
+      targetRoles: ["admin", "emergency_team", "truck_driver"],
     });
   }
 
@@ -284,7 +284,7 @@ export function buildAlertDraftsFromImpact(
       roadSegment: impact.roadSegment,
       affectedVehicleIds: critShp.assignedVehicleId ? [critShp.assignedVehicleId] : vehicleIds,
       affectedShipmentIds: [critShp.id],
-      targetRoles: ["admin", "logistics_manager", "emergency_team"],
+      targetRoles: ["admin", "logistics_manager", "emergency_team", "truck_driver"],
     });
   }
 

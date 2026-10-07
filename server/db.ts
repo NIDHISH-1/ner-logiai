@@ -1,6 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { nanoid } from "nanoid";
+import crypto from "crypto";
 import {
   Alert,
   AuditEvent,
@@ -149,6 +150,73 @@ export async function getUserByOpenId(openId: string): Promise<User | undefined>
     }
   }
   return memoryUsers.get(openId);
+}
+
+export async function getUserByEmail(email: string): Promise<User | undefined> {
+  const normalizedEmail = email.trim().toLowerCase();
+  const db = await getDb();
+  if (db) {
+    try {
+      const result = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);
+      if (result.length > 0) return result[0];
+    } catch (error) {
+      console.warn("[Database] getUserByEmail failed, checking memory:", error);
+    }
+  }
+  for (const user of Array.from(memoryUsers.values())) {
+    if (user.email && user.email.toLowerCase() === normalizedEmail) {
+      return user;
+    }
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Credential Store & PBKDF2 Password Hashing
+// ---------------------------------------------------------------------------
+interface UserCredential {
+  email: string;
+  openId: string;
+  salt: string;
+  hash: string;
+  organization?: string;
+  createdAt: Date;
+}
+const memoryCredentials = new Map<string, UserCredential>();
+
+export function hashPassword(password: string, salt = crypto.randomBytes(16).toString("hex")): { hash: string; salt: string } {
+  const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, "sha512").toString("hex");
+  return { hash, salt };
+}
+
+export function verifyPassword(password: string, hash: string, salt: string): boolean {
+  try {
+    const verifyHash = crypto.pbkdf2Sync(password, salt, 1000, 64, "sha512").toString("hex");
+    return crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(verifyHash, "hex"));
+  } catch {
+    return false;
+  }
+}
+
+export async function saveUserCredential(email: string, openId: string, password: string, organization?: string): Promise<void> {
+  const normalizedEmail = email.trim().toLowerCase();
+  const { hash, salt } = hashPassword(password);
+  memoryCredentials.set(normalizedEmail, {
+    email: normalizedEmail,
+    openId,
+    salt,
+    hash,
+    organization,
+    createdAt: new Date(),
+  });
+}
+
+export async function verifyUserCredential(email: string, password: string): Promise<{ valid: boolean; openId?: string }> {
+  const normalizedEmail = email.trim().toLowerCase();
+  const cred = memoryCredentials.get(normalizedEmail);
+  if (!cred) return { valid: false };
+  const valid = verifyPassword(password, cred.hash, cred.salt);
+  return { valid, openId: valid ? cred.openId : undefined };
 }
 
 export const demoShipments: InsertShipment[] = [
@@ -928,9 +996,10 @@ export async function listAlerts(limit = 50, filterRole?: string): Promise<Broad
   const filtered = sorted.filter((a) => {
     const roles = a.targetRoles ?? [];
     if (filterRole === "truck_driver") {
-      const isTargeted = roles.includes("truck_driver");
+      const isTargeted = roles.includes("truck_driver") || roles.length === 0;
       const hasVehicle = a.affectedVehicleIds?.includes("TRK-104");
-      return isTargeted || hasVehicle;
+      const isHighOrCritical = a.severity === "CRITICAL" || a.severity === "HIGH";
+      return isTargeted || hasVehicle || isHighOrCritical;
     }
     if (filterRole === "emergency_team") {
       const isTargeted = roles.includes("emergency_team");

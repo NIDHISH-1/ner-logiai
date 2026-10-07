@@ -1,8 +1,10 @@
+import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
-import { AlertTriangle, CheckCircle2, MapPin, Navigation, Route, ShieldAlert } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CloudOff, Database, MapPin, Navigation, Route, ShieldAlert } from "lucide-react";
+import { formatCacheAge, getPersistedCache, setPersistedCache } from "@/lib/persistentCache";
 
 export function DriverNavigationDialog({
   open,
@@ -13,11 +15,33 @@ export function DriverNavigationDialog({
   onOpenChange: (open: boolean) => void;
   onShowOnMap?: () => void;
 }) {
-  const routeQuery = trpc.operations.route.useQuery({
-    origin: "GUWAHATI",
-    destination: "IMPHAL",
-  });
-  const recommendation = routeQuery.data?.recommendation;
+  const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
+
+  useEffect(() => {
+    const handleOnline = () => setOnline(true);
+    const handleOffline = () => setOnline(false);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  const routeQuery = trpc.operations.route.useQuery(
+    { origin: "GUWAHATI", destination: "IMPHAL" },
+    { retry: false }
+  );
+
+  useEffect(() => {
+    if (routeQuery.data?.recommendation) {
+      setPersistedCache("route.GUWAHATI-IMPHAL", routeQuery.data.recommendation);
+    }
+  }, [routeQuery.data]);
+
+  const cachedEntry = getPersistedCache<any>("route.GUWAHATI-IMPHAL");
+  const recommendation = routeQuery.data?.recommendation || cachedEntry?.data;
+  const isFromCache = !routeQuery.data?.recommendation && Boolean(cachedEntry?.data);
 
   const handleFocusMap = () => {
     window.dispatchEvent(
@@ -33,8 +57,18 @@ export function DriverNavigationDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl bg-white p-6 max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Badge className="border-0 bg-sky-100 text-sky-800">DRIVER ACTIVE NAVIGATION</Badge>
+            {!online && (
+              <Badge variant="outline" className="border-amber-400 bg-amber-50 text-amber-900 text-[10px] font-bold flex items-center gap-1">
+                <CloudOff size={11} /> OFFLINE NAVIGATION
+              </Badge>
+            )}
+            {isFromCache && cachedEntry && (
+              <Badge variant="outline" className="border-slate-300 bg-slate-50 text-slate-700 text-[10px] font-semibold flex items-center gap-1">
+                <Database size={11} /> CACHED ROUTE · {formatCacheAge(cachedEntry.cachedAt)}
+              </Badge>
+            )}
             <Badge variant="outline" className="text-[11px] border-emerald-300 text-emerald-700">
               {recommendation?.status === "RECOMMENDED" ? "VALIDATED BY SAFETY ENGINE" : "SAFETY CHECK REQUIRED"}
             </Badge>
@@ -44,7 +78,9 @@ export function DriverNavigationDialog({
             Guwahati → Imphal Recommended Corridor
           </DialogTitle>
           <DialogDescription className="text-xs text-slate-500">
-            Real-time multi-criteria route optimization powered by A* and the 3-tier Safety Validator.
+            {!online
+              ? "Displaying previously synchronized route intelligence. Live road telemetry disabled while offline."
+              : "Real-time multi-criteria route optimization powered by A* and the 3-tier Safety Validator."}
           </DialogDescription>
         </DialogHeader>
 
@@ -100,47 +136,55 @@ export function DriverNavigationDialog({
 
               {/* Waypoints sequence */}
               <div className="pt-2">
-                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-1.5">Route Checkpoints</p>
-                <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-700">
-                  {recommendation.route.map((node, idx) => (
-                    <span key={node} className="inline-flex items-center gap-1">
-                      <span className="font-semibold bg-white px-2 py-0.5 rounded border border-slate-200">
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1.5">Route Waypoint Path</span>
+                <div className="flex flex-wrap items-center gap-1.5 text-xs font-mono text-slate-700">
+                  {recommendation.route?.map((node: string, index: number) => (
+                    <span key={node} className="flex items-center gap-1">
+                      <span className="bg-white px-2 py-1 rounded border border-slate-200 font-semibold text-slate-800">
                         {node}
                       </span>
-                      {idx < recommendation.route.length - 1 && (
-                        <span className="text-slate-400">→</span>
-                      )}
+                      {index < recommendation.route.length - 1 && <span className="text-slate-400">→</span>}
                     </span>
                   ))}
                 </div>
               </div>
-
-              <p className="text-[11px] text-slate-500 pt-1 leading-relaxed">
-                {recommendation.reason}
-              </p>
             </div>
 
-            <div className="flex items-center justify-between gap-3 pt-2">
+            {/* Offline Advisory Notice */}
+            {!online && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 space-y-1">
+                <p className="font-bold flex items-center gap-1.5">
+                  <CloudOff size={14} className="text-amber-700" />
+                  Offline Navigation Advisory
+                </p>
+                <p className="text-amber-800 leading-relaxed">
+                  Navigating using pre-cached road geometry and risk assessments. If conditions on the ground diverge, report hazards locally for automatic synchronization once connectivity is restored.
+                </p>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between pt-2">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => onOpenChange(false)}
-                className="text-xs border-slate-200"
+                className="text-xs"
               >
-                Close Navigation Details
+                Close
               </Button>
               <Button
                 size="sm"
                 onClick={handleFocusMap}
-                className="gap-2 bg-[#12313b] text-white hover:bg-[#1d4853] text-xs"
+                className="gap-2 bg-sky-600 text-white hover:bg-sky-700 text-xs"
               >
-                <MapPin size={14} /> Focus on Map & Waypoints
+                <MapPin size={14} />
+                View On Operational Map
               </Button>
             </div>
           </div>
         ) : (
-          <div className="p-8 text-center text-xs text-slate-500">
-            Calculating safe route recommendations from engine...
+          <div className="p-8 text-center text-sm text-slate-500">
+            Loading route guidance...
           </div>
         )}
       </DialogContent>

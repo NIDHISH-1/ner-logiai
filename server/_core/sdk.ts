@@ -210,6 +210,24 @@ class SDKServer {
       return null;
     }
 
+    if (cookieValue.startsWith("demo_token_")) {
+      const parts = cookieValue.split("_");
+      const role = parts[2] === "truck" && parts[3] === "driver"
+        ? "truck_driver"
+        : parts[2] === "field" && parts[3] === "officer"
+        ? "field_officer"
+        : parts[2] === "logistics" && parts[3] === "manager"
+        ? "logistics_manager"
+        : parts[2] === "emergency" && parts[3] === "team"
+        ? "emergency_team"
+        : parts[2] || "admin";
+      return {
+        openId: `demo_${role}`,
+        appId: "ner-logiai-standalone",
+        name: `Demo ${role}`,
+      };
+    }
+
     try {
       const secretKey = this.getSessionSecret();
       const { payload } = await jwtVerify(cookieValue, secretKey, {

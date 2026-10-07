@@ -4,27 +4,51 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { httpBatchLink, TRPCClientError } from "@trpc/client";
 import { createRoot } from "react-dom/client";
 import superjson from "superjson";
+import L from "leaflet";
 import App from "./App";
 import { startLogin } from "./const";
 import "./index.css";
 
+// Defensive patch for Leaflet to prevent "Cannot read properties of undefined (reading '_leaflet_pos')"
+if (typeof window !== "undefined" && L && L.DomUtil) {
+  const origGetPosition = L.DomUtil.getPosition;
+  L.DomUtil.getPosition = function (el: HTMLElement) {
+    if (!el) return new L.Point(0, 0);
+    try {
+      return origGetPosition ? origGetPosition.call(L.DomUtil, el) : ((el as any)._leaflet_pos || new L.Point(0, 0));
+    } catch {
+      return new L.Point(0, 0);
+    }
+  };
+}
+
 const queryClient = new QueryClient();
 
+const isUnauthorizedError = (err: unknown): boolean => {
+  if (!err) return false;
+  const msg = ((err as any)?.message || String(err)).toLowerCase();
+  const code = (err as any)?.data?.code || (err as any)?.shape?.data?.code;
+  return (
+    code === "UNAUTHORIZED" ||
+    msg.includes("10001") ||
+    msg.includes(UNAUTHED_ERR_MSG.toLowerCase()) ||
+    msg.includes("please login")
+  );
+};
+
 const redirectToLoginIfUnauthorized = (error: unknown) => {
-  if (!(error instanceof TRPCClientError)) return;
   if (typeof window === "undefined") return;
-
-  const isUnauthorized = error.message === UNAUTHED_ERR_MSG;
-
-  if (!isUnauthorized) return;
-
+  if (!isUnauthorizedError(error)) return;
   startLogin();
 };
 
 queryClient.getQueryCache().subscribe(event => {
   if (event.type === "updated" && event.action.type === "error") {
     const error = event.query.state.error;
-    redirectToLoginIfUnauthorized(error);
+    if (isUnauthorizedError(error)) {
+      redirectToLoginIfUnauthorized(error);
+      return;
+    }
     console.error("[API Query Error]", error);
   }
 });
@@ -32,7 +56,10 @@ queryClient.getQueryCache().subscribe(event => {
 queryClient.getMutationCache().subscribe(event => {
   if (event.type === "updated" && event.action.type === "error") {
     const error = event.mutation.state.error;
-    redirectToLoginIfUnauthorized(error);
+    if (isUnauthorizedError(error)) {
+      redirectToLoginIfUnauthorized(error);
+      return;
+    }
     console.error("[API Mutation Error]", error);
   }
 });
@@ -83,3 +110,12 @@ createRoot(document.getElementById("root")!).render(
     </QueryClientProvider>
   </trpc.Provider>
 );
+
+// Register PWA service worker safely
+if (typeof window !== "undefined" && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch((err) => {
+      console.warn("[SW] Registration skipped or failed:", err);
+    });
+  });
+}

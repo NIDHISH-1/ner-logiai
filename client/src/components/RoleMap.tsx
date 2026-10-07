@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { MapPin, Route, Truck, TriangleAlert, Radio, Activity } from "lucide-react";
+import { MapPin, Route, Truck, TriangleAlert, Radio, Activity, CloudOff } from "lucide-react";
 import { Role, roleKeyByLabel } from "./roleConfig";
 import { trpc } from "@/lib/trpc";
+import { getPersistedCache, setPersistedCache } from "@/lib/persistentCache";
 
 type MapPoint = { label: string; point: [number, number]; color: string; layer: string; popup?: string; iconHtml?: string };
 type RouteNodeId = "GUWAHATI" | "JORHAT" | "KOHIMA" | "SHILLONG" | "IMPHAL" | "REMOTE_BLOCKED";
@@ -63,12 +64,42 @@ const corridorGeometries: { id: string; name: string; coordinates: [number, numb
 export function RoleMap({ role, compact = false }: { role: Role; compact?: boolean }) {
   const mapId = useMemo(() => `role-map-${roleKeyByLabel[role]}-${compact ? "compact" : "full"}`, [role, compact]);
   const [routeSelection, setRouteSelection] = useState<{ origin: RouteNodeId; destination: RouteNodeId }>({ origin: "GUWAHATI", destination: "IMPHAL" });
+  const [isOffline, setIsOffline] = useState(() => typeof navigator === "undefined" ? false : !navigator.onLine);
+  const [tilesFailed, setTilesFailed] = useState(false);
   const visibleLayers = layersByRole[role];
 
-  const snapshotQuery = trpc.operations.snapshot.useQuery(undefined, { refetchInterval: 10000 });
-  const incidentsQuery = trpc.demo.incidents.useQuery();
-  const riskQuery = trpc.demo.risk.useQuery();
-  const routeQuery = trpc.demo.routes.useQuery(routeSelection);
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOffline(false);
+      setTilesFailed(false);
+    };
+    const handleOffline = () => setIsOffline(true);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  const snapshotQuery = trpc.operations.snapshot.useQuery(undefined, { refetchInterval: 10000, retry: false });
+  const incidentsQuery = trpc.demo.incidents.useQuery(undefined, { retry: false });
+  const riskQuery = trpc.demo.risk.useQuery(undefined, { retry: false });
+  const routeQuery = trpc.demo.routes.useQuery(routeSelection, { retry: false });
+
+  // Update persistent cache on successful fetch
+  useEffect(() => {
+    if (snapshotQuery.data) setPersistedCache("operations.snapshot", snapshotQuery.data);
+  }, [snapshotQuery.data]);
+
+  useEffect(() => {
+    if (incidentsQuery.data) setPersistedCache("demo.incidents", incidentsQuery.data);
+  }, [incidentsQuery.data]);
+
+  const cachedSnapshot = getPersistedCache<any>("operations.snapshot")?.data;
+  const activeSnapshot = snapshotQuery.data || cachedSnapshot;
+  const cachedIncidents = getPersistedCache<any>("demo.incidents")?.data;
+  const activeIncidents = incidentsQuery.data || cachedIncidents;
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -166,14 +197,14 @@ export function RoleMap({ role, compact = false }: { role: Role; compact?: boole
         `,
       };
     });
-  }, [snapshotQuery.data?.vehicles, role]);
+  }, [activeSnapshot?.vehicles, role]);
 
   const persistedPoints = useMemo<MapPoint[]>(() => {
-    return (incidentsQuery.data ?? []).filter(incident => {
+    return (activeIncidents ?? []).filter((incident: any) => {
       if (role === "Emergency Response Team") return incident.status === "VERIFIED" && incident.severity === "CRITICAL";
       if (role === "Truck Driver") return ["HIGH", "CRITICAL"].includes(incident.severity);
       return true;
-    }).map(incident => {
+    }).map((incident: any) => {
       const isBlocked = incident.roadAccessibility === "blocked";
       const color = incident.severity === "CRITICAL" ? "#ef4444" : incident.severity === "HIGH" ? "#f97316" : "#eab308";
       return {
@@ -218,14 +249,50 @@ export function RoleMap({ role, compact = false }: { role: Role; compact?: boole
     }));
   }, [riskQuery.data]);
 
-  const mapPoints = [...vehiclePoints, ...persistedPoints, ...riskPoints];
+  const mapPoints = useMemo(() => [...vehiclePoints, ...persistedPoints, ...riskPoints], [vehiclePoints, persistedPoints, riskPoints]);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const layerGroupRef = useRef<L.LayerGroup | null>(null);
 
   useEffect(() => {
-    const map = L.map(mapId, { zoomControl: false, attributionControl: true }).setView([25.8, 92.7], compact ? 6.2 : 6);
-    L.control.zoom({ position: "bottomright" }).addTo(map);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18, attribution: "© OpenStreetMap contributors" }).addTo(map);
+    if (!mapContainerRef.current) return;
+    if ((mapContainerRef.current as any)._leaflet_id) {
+      delete (mapContainerRef.current as any)._leaflet_id;
+    }
+    const map = L.map(mapContainerRef.current, {
+      zoomControl: false,
+      attributionControl: true,
+      fadeAnimation: false,
+      zoomAnimation: false,
+    }).setView([25.8, 92.7], compact ? 6.2 : 6);
 
-    // Corridor accessibility overlays
+    L.control.zoom({ position: "bottomright" }).addTo(map);
+    const tileLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18, attribution: "© OpenStreetMap contributors" }).addTo(map);
+    tileLayer.on("tileerror", () => {
+      setTilesFailed(true);
+    });
+
+    const layerGroup = L.layerGroup().addTo(map);
+    mapRef.current = map;
+    layerGroupRef.current = layerGroup;
+
+    return () => {
+      if (mapRef.current) {
+        try {
+          mapRef.current.remove();
+        } catch {}
+        mapRef.current = null;
+        layerGroupRef.current = null;
+      }
+    };
+  }, [compact]);
+
+  useEffect(() => {
+    const layerGroup = layerGroupRef.current;
+    if (!layerGroup) return;
+    layerGroup.clearLayers();
+
+    // Corridor accessibility overlays with textual status labels
     if (visibleLayers.includes("roads") || visibleLayers.includes("routes")) {
       corridorGeometries.forEach((corridor) => {
         let strokeColor = "#22c55e"; // accessible
@@ -235,9 +302,9 @@ export function RoleMap({ role, compact = false }: { role: Role; compact?: boole
         let statusText = "ACCESSIBLE";
 
         // Check if corridor has active blockage from incidents
-        const matchingIncident = (incidentsQuery.data ?? []).find(inc =>
-          inc.description.toUpperCase().includes(corridor.id.split("-")[1] ?? "") ||
-          (corridor.id.includes("JORHAT") && inc.description.toUpperCase().includes("JORHAT"))
+        const matchingIncident = (activeIncidents ?? []).find((inc: any) =>
+          inc.description?.toUpperCase().includes(corridor.id.split("-")[1] ?? "") ||
+          (corridor.id.includes("JORHAT") && inc.description?.toUpperCase().includes("JORHAT"))
         );
 
         const isBlocked = corridor.defaultStatus === "blocked" || matchingIncident?.roadAccessibility === "blocked" || matchingIncident?.severity === "CRITICAL";
@@ -262,7 +329,7 @@ export function RoleMap({ role, compact = false }: { role: Role; compact?: boole
           weight,
           opacity,
           dashArray: dashStyle,
-        }).addTo(map).bindTooltip(`<strong>${corridor.name}</strong><br/>Status: ${statusText}`);
+        }).addTo(layerGroup).bindTooltip(`<strong>${corridor.name}</strong><br/>Status: <strong>${statusText}</strong>`);
       });
     }
 
@@ -274,23 +341,29 @@ export function RoleMap({ role, compact = false }: { role: Role; compact?: boole
           color: "#059669",
           weight: 6,
           opacity: 0.95,
-        }).addTo(map).bindTooltip("<strong>A* Recommended Safe Route</strong><br/>Human-in-the-loop verified bypass");
+        }).addTo(layerGroup).bindTooltip("<strong>A* Recommended Safe Route</strong><br/>Human-in-the-loop verified bypass");
       }
     }
 
-    // Markers
+    // Markers with accessible high-contrast text labels (not just colors)
     mapPoints.filter(point => visibleLayers.includes(point.layer)).forEach(point => {
       const isVeh = point.layer === "vehicles";
       const isBlocked = point.layer === "blocked";
       const icon = L.divIcon({
         className: "custom-pin",
         html: isVeh
-          ? `<div style="background:${point.color}; border:2px solid white; border-radius:50%; width:24px; height:24px; display:grid; place-items:center; box-shadow:0 2px 6px rgba(0,0,0,0.3);"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/></svg></div>`
-          : `<span style="--pin:${point.color}" class="map-pin ${isBlocked ? "incident" : ""}"></span>`,
-        iconSize: [24, 24],
+          ? `<div style="display:flex; align-items:center; gap:3px;">
+              <div style="background:${point.color}; border:2px solid white; border-radius:50%; width:24px; height:24px; display:grid; place-items:center; box-shadow:0 2px 6px rgba(0,0,0,0.3);"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/></svg></div>
+              <span style="background:#0f172a; color:#ffffff; font-size:9px; font-weight:700; padding:1px 5px; border-radius:3px; white-space:nowrap; box-shadow:0 1px 3px rgba(0,0,0,0.4);">${point.label.split("·")[0].trim()}</span>
+             </div>`
+          : `<div style="display:flex; align-items:center; gap:2px;">
+              <span style="--pin:${point.color}" class="map-pin ${isBlocked ? "incident" : ""}"></span>
+              <span style="background:${isBlocked ? '#b91c1c' : '#c2410c'}; color:#ffffff; font-size:8.5px; font-weight:800; padding:1px 4px; border-radius:3px; white-space:nowrap; box-shadow:0 1px 3px rgba(0,0,0,0.3);">${isBlocked ? "BLOCKED" : "CAUTION"}</span>
+             </div>`,
+        iconSize: [80, 24],
         iconAnchor: [12, 12],
       });
-      L.marker(point.point, { icon }).addTo(map).bindPopup(point.popup ?? `<strong>${point.label}</strong>`);
+      L.marker(point.point, { icon }).addTo(layerGroup).bindPopup(point.popup ?? `<strong>${point.label}</strong>`);
     });
 
     // Risk exposure overlay
@@ -301,17 +374,21 @@ export function RoleMap({ role, compact = false }: { role: Role; compact?: boole
         fillColor: "#eab308",
         fillOpacity: 0.12,
         weight: 1,
-      }).addTo(map).bindTooltip("Moderate risk zone · Weather / terrain penalty active");
+      }).addTo(layerGroup).bindTooltip("Moderate risk zone · Weather / terrain penalty active");
     }
-
-    return () => {
-      map.remove();
-    };
-  }, [mapId, role, compact, visibleLayers, mapPoints, routeQuery.data, incidentsQuery.data]);
+  }, [visibleLayers, mapPoints, routeQuery.data, activeIncidents]);
 
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-[#dce8e7]">
-      <div id={mapId} className={compact ? "h-[250px] w-full" : "h-[380px] w-full"} />
+    <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-[#f1f5f9]">
+      <div
+        ref={mapContainerRef}
+        className={compact ? "h-[250px] w-full" : "h-[380px] w-full"}
+        style={{
+          backgroundColor: "#f8fafc",
+          backgroundImage: "radial-gradient(#cbd5e1 1.2px, transparent 1.2px)",
+          backgroundSize: "24px 24px",
+        }}
+      />
 
       {/* Top Left Header Bar */}
       <div className="absolute left-3 top-3 z-[500] flex items-center gap-2 rounded-lg bg-white/95 px-3 py-2 text-[10px] font-bold text-slate-700 shadow-lg">
@@ -319,8 +396,15 @@ export function RoleMap({ role, compact = false }: { role: Role; compact?: boole
         {labelsByRole[role]}
       </div>
 
+      {(isOffline || tilesFailed) && (
+        <div className="absolute top-12 left-3 z-[500] flex items-center gap-1.5 rounded-lg bg-slate-900/90 text-amber-300 px-2.5 py-1.5 text-[9px] font-bold tracking-wide shadow-lg border border-amber-500/40 backdrop-blur-sm">
+          <CloudOff size={11} className="text-amber-400" />
+          OFFLINE MAP · CACHED VECTOR OVERLAYS ACTIVE
+        </div>
+      )}
+
       {routeQuery.data?.recommendation?.status === "NO SAFE ROUTE AVAILABLE" && (
-        <div className="absolute top-12 left-3 z-[500] flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-[10px] font-bold tracking-wide text-white shadow-lg border border-red-400">
+        <div className="absolute top-20 left-3 z-[500] flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-[10px] font-bold tracking-wide text-white shadow-lg border border-red-400">
           <TriangleAlert size={12} className="text-white" />
           NO SAFE ROUTE AVAILABLE
         </div>
@@ -332,22 +416,24 @@ export function RoleMap({ role, compact = false }: { role: Role; compact?: boole
         SIMULATED GPS
       </div>
 
-      {/* Bottom Legend */}
-      <div className="absolute bottom-3 left-3 z-[500] flex flex-wrap gap-2 rounded-lg bg-white/95 px-3 py-2 text-[10px] text-slate-600 shadow-lg">
-        <span className="flex items-center gap-1 font-medium">
-          <i className="h-2 w-2 rounded-full bg-emerald-500 inline-block" /> Accessible
+      {/* Bottom Legend with accessible text tags (Requirement 14) */}
+      <div className="absolute bottom-3 left-3 z-[500] flex flex-wrap items-center gap-2 rounded-lg bg-white/95 px-3 py-1.5 text-[10px] text-slate-700 shadow-lg border border-slate-200">
+        <span className="flex items-center gap-1 font-bold text-emerald-800">
+          <span className="rounded bg-emerald-100 px-1 text-[9px] uppercase">ACCESSIBLE</span>
         </span>
-        <span className="flex items-center gap-1 font-medium">
-          <i className="h-2 w-2 rounded-full bg-amber-500 inline-block" /> Restricted
+        <span className="flex items-center gap-1 font-bold text-amber-800">
+          <span className="rounded bg-amber-100 px-1 text-[9px] uppercase">RESTRICTED</span>
         </span>
-        <span className="flex items-center gap-1 font-medium">
-          <i className="h-2 w-2 rounded-full bg-red-500 inline-block" /> Blocked
+        <span className="flex items-center gap-1 font-bold text-red-800">
+          <span className="rounded bg-red-100 px-1 text-[9px] uppercase">BLOCKED</span>
         </span>
-        <span className="flex items-center gap-1 font-medium">
-          <Truck size={11} className="text-sky-600" /> Vehicle
+        <span className="flex items-center gap-1 font-semibold text-sky-800">
+          <Truck size={12} className="text-sky-600" />
+          <span className="rounded bg-sky-100 px-1 text-[9px]">VEHICLE</span>
         </span>
-        <span className="flex items-center gap-1 font-medium">
-          <Route size={11} className="text-emerald-700" /> A* Safe Route
+        <span className="flex items-center gap-1 font-semibold text-emerald-900">
+          <Route size={12} className="text-emerald-700" />
+          <span className="rounded bg-emerald-100 px-1 text-[9px]">A* BYPASS</span>
         </span>
       </div>
     </div>

@@ -70,11 +70,11 @@ export function BroadcastAlertDialog({
         <DialogHeader>
           <div className="flex items-center gap-2 text-red-600">
             <Radio size={18} className="animate-pulse" />
-            <span className="text-[11px] font-bold uppercase tracking-wider">Emergency Broadcast Network</span>
+            <span className="text-[11px] font-bold uppercase tracking-wider">IN-APP ALERT SYSTEM · REGIONAL BROADCAST</span>
           </div>
           <DialogTitle className="text-lg font-bold text-slate-900">Broadcast Regional Emergency Alert</DialogTitle>
           <DialogDescription className="text-xs text-slate-500">
-            Instantly pushes actionable safety directives to active drivers, field officers, and logistics depots.
+            Broadcasts actionable in-app safety directives across active drivers, field officers, and logistics depots.
           </DialogDescription>
         </DialogHeader>
 
